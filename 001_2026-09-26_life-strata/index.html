@@ -16,6 +16,7 @@
 } }
 </script>
 <style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
 </head>
 <body>
 <div id="info"></div>
