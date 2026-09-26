@@ -25,10 +25,11 @@
 <body>
 <iframe id="art" title="Morphogen Terrain" allow="fullscreen"></iframe>
 <script>
-  const W = {"dir":"004_2026-09-26_morphogen-terrain","seed":21};
+  const W = {"dir":"004_2026-09-26_morphogen-terrain","seed":21,"view":null};
   const seed = new URLSearchParams(location.search).get('seed') ?? W.seed;
   const art = document.getElementById('art');
-  art.src = `../../${W.dir}/index.html${seed != null ? `?seed=${seed}` : ''}`;
+  const cam = W.view ? `&cam=${[W.view.x, W.view.y, W.view.z, W.view.tx, W.view.ty, W.view.tz].join(',')}` : '';
+  art.src = `../../${W.dir}/index.html${seed != null ? `?seed=${seed}` : ''}${cam}`;
   art.addEventListener('load', () => art.contentWindow.focus());
 </script>
 </body>

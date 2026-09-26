@@ -87,6 +87,10 @@ controls.target.set(0, T * 0.45, 0);
 controls.enableDamping = true;
 controls.autoRotate = true;
 controls.autoRotateSpeed = 0.3;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
 
 scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.6));
 const key = new THREE.DirectionalLight(0xffffff, 1.4);
