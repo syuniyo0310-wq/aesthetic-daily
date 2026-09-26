@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Octree Strata</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.45); pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const RULES = [
+  ['Conway',    [3],          [2, 3]],
+  ['HighLife',  [3, 6],       [2, 3]],
+  ['Move',      [3, 6, 8],    [2, 4, 5]],
+  ['Day&Night', [3, 6, 7, 8], [3, 4, 6, 7, 8]],
+  ['Anneal',    [4, 6, 7, 8], [3, 5, 6, 7, 8]],
+  ['Amoeba',    [3, 5, 7],    [1, 3, 5, 8]],
+];
+const PALETTES = [
+  { name: '墨と金', bg: '#0a0a0a', c: ['#1c1a18', '#b08d57', '#f4e9d8'] },
+  { name: '藍と朱', bg: '#0b1020', c: ['#14213d', '#e63946', '#f6efe4'] },
+  { name: '黒曜',   bg: '#07080a', c: ['#101216', '#7a8ca3', '#e8ecf2'] },
+  { name: '夜桜',   bg: '#100b18', c: ['#2a2140', '#d77fa1', '#fbe7e9'] },
+];
+const pal = pick(PALETTES);
+
+// --- 時代ごとに規則の変わる Life を、立方体のセルで時空の体積にする ---
+const N = 80, G = 112, U = 0.6, R0 = N * 0.47;
+const epochs = [];
+{
+  const n = 3 + Math.floor(rand() * 2);
+  let pool = RULES.slice(), g = 0;
+  for (let i = 0; i < n; i++) {
+    const r = pool.splice(Math.floor(rand() * pool.length), 1)[0];
+    const len = i === n - 1 ? G - g : Math.floor(G / n * (0.7 + rand() * 0.6));
+    epochs.push({ name: r[0], b: r[1], s: r[2], to: g + len });
+    g += len;
+  }
+}
+const epochAt = (g) => epochs.find((e) => g < e.to) ?? epochs[epochs.length - 1];
+const vol = new Uint8Array(N * N * G);           // index = (g * N + z) * N + x
+let grid = new Uint8Array(N * N);
+function sow(cx, cy, r, dens) {
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const d = Math.hypot(x - cx, y - cy);
+    if (d < r && rand() < dens * (1 - d / r * 0.5)) grid[y * N + x] = 1;
+  }
+}
+sow(N / 2, N / 2, N * (0.3 + rand() * 0.12), 0.32 + rand() * 0.15);
+for (let g = 0; g < G; g++) {
+  vol.set(grid, g * N * N);
+  const e = epochAt(g + 1), next = new Uint8Array(N * N);
+  let pop = 0;
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (Math.hypot(x - N / 2 + 0.5, y - N / 2 + 0.5) > R0) continue;
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+      if (dx || dy) n += grid[((y + dy + N) % N) * N + (x + dx + N) % N];
+    const v = grid[y * N + x] ? +e.s.includes(n) : +e.b.includes(n);
+    next[y * N + x] = v; pop += v;
+  }
+  grid = next;
+  if (pop < 30) sow(N * (0.35 + rand() * 0.3), N * (0.35 + rand() * 0.3), 8 + rand() * 8, 0.4);
+}
+
+// --- 八分木で束ねる：密な時空は大きな塊に、まばらな所は細かい粒のまま ---
+const SIZES = [8, 4, 2, 1], FILL = { 8: 0.27, 4: 0.4, 2: 0.6, 1: 1 };
+const used = new Uint8Array(vol.length);
+const blocks = { 8: [], 4: [], 2: [], 1: [] };
+for (const S of SIZES) {
+  const need = Math.ceil(FILL[S] * S * S * S);
+  for (let g = 0; g + S <= G; g += S) for (let z = 0; z + S <= N; z += S) for (let x = 0; x + S <= N; x += S) {
+    let c = 0, free = true;
+    for (let dg = 0; dg < S && free; dg++) for (let dz = 0; dz < S && free; dz++) for (let dx = 0; dx < S; dx++) {
+      const k = ((g + dg) * N + z + dz) * N + x + dx;
+      if (used[k]) { free = false; break; }
+      c += vol[k];
+    }
+    if (!free || c < need) continue;
+    for (let dg = 0; dg < S; dg++) for (let dz = 0; dz < S; dz++) for (let dx = 0; dx < S; dx++) used[((g + dg) * N + z + dz) * N + x + dx] = 1;
+    blocks[S].push(x, g, z);
+  }
+}
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 110, 230);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.7;
+
+const TOP = G * U;
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 600);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(35) / 2) / Math.pow(camera.aspect, 0.6))) : 35; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(98, TOP * 0.8, 98);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, TOP * 0.5, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.7));
+const sun = new THREE.DirectionalLight(0xfff4e6, 2.6);
+sun.position.set(60, 140, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -60, right: 60, top: 90, bottom: -20, far: 360 });
+scene.add(sun);
+
+// 大きさごとに質感を変える：大塊は差し色の磨いた金属、中は明るい陶器、小と粒は高さのグラデーションの石
+const LOOK = {
+  8: { mat: { metalness: 0.85, roughness: 0.2 }, gap: 0.95 },
+  4: { mat: { metalness: 0.25, roughness: 0.35 }, gap: 0.93 },
+  2: { mat: { metalness: 0.0, roughness: 0.85 }, gap: 0.9 },
+  1: { mat: { metalness: 0.0, roughness: 0.6 }, gap: 0.8 },
+};
+const cs = pal.c.map((h) => new THREE.Color(h));
+const meshes = [];
+const m = new THREE.Matrix4(), col = new THREE.Color();
+for (const S of SIZES) {
+  const list = blocks[S], n = list.length / 3;
+  if (!n) continue;
+  const L = LOOK[S], w = S * U;
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(w * L.gap, w * L.gap, w * L.gap), new THREE.MeshStandardMaterial(L.mat), n);
+  mesh.castShadow = mesh.receiveShadow = true;
+  const ys = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = list[i * 3], g = list[i * 3 + 1], z = list[i * 3 + 2];
+    const y = (g + S / 2) * U;
+    m.makeTranslation((x + S / 2 - N / 2) * U, y, (z + S / 2 - N / 2) * U);
+    mesh.setMatrixAt(i, m);
+    const t = g / G;
+    if (S === 8) col.copy(cs[1]).offsetHSL(0, 0.05, 0.08);
+    else if (S === 4) col.lerpColors(cs[1], cs[2], 0.65);
+    else { if (t < 0.55) col.lerpColors(cs[0], cs[1], t / 0.55 * 0.6); else col.lerpColors(cs[0], cs[2], 0.35 + (t - 0.55) / 0.45 * 0.65); if (S === 2) col.multiplyScalar(0.85); }
+    mesh.setColorAt(i, col);
+    ys[i] = y;
+  }
+  mesh.userData.ys = ys;
+  mesh.count = 0;
+  scene.add(mesh);
+  meshes.push(mesh);
+}
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), new THREE.ShadowMaterial({ opacity: 0.35 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+document.getElementById('info').textContent = `019 · OCTREE STRATA · ${epochs.map((e) => e.name).join(' → ')} · ${pal.name} · seed ${seed} · ${SIZES.map((S) => `${S}:${blocks[S].length / 3}`).join(' ')}`;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `019_octree-strata_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+const t0 = performance.now();
+renderer.setAnimationLoop(() => {
+  const p = Math.min(1, (performance.now() - t0) / 7000);
+  const lim = TOP * (1 - Math.pow(1 - p, 3)) + 0.01;
+  for (const mesh of meshes) {
+    const ys = mesh.userData.ys;
+    let c = mesh.count;
+    while (c < ys.length && ys[c] <= lim) c++;
+    mesh.count = c;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Parity Strata</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+// 結晶の時代（パリティ則：小さな種が自己複製してフラクタルになる）と、生命の時代（Life）が交互に来る
+const CRYSTAL = [
+  { name: 'Replicator B1357/S1357', b: [1, 3, 5, 7], s: [1, 3, 5, 7] },
+  { name: 'Fredkin B1357/S02468',   b: [1, 3, 5, 7], s: [0, 2, 4, 6, 8] },
+];
+const LIFE = [
+  { name: 'Conway B3/S23',          b: [3],          s: [2, 3] },
+  { name: 'HighLife B36/S23',       b: [3, 6],       s: [2, 3] },
+  { name: 'Move B368/S245',         b: [3, 6, 8],    s: [2, 4, 5] },
+  { name: 'Amoeba B357/S1358',      b: [3, 5, 7],    s: [1, 3, 5, 8] },
+];
+const PALETTES = [
+  { name: 'Aurora',   bg: '#03070a', c: ['#0fbfa0', '#3a86ff', '#b5f2e0', '#ffd166'] },
+  { name: 'Spectrum', bg: '#05050a', c: ['#ff3b30', '#ffcc00', '#34c759', '#00c7ff', '#5e5ce6', '#ff2d92'] },
+  { name: '浮世絵',   bg: '#0b1020', c: ['#1d3557', '#e63946', '#f1faee', '#e9c46a'] },
+  { name: '墨と金',   bg: '#0a0908', c: ['#3a332c', '#b08d57', '#f4e9d8', '#8c2f39'] },
+];
+const pal = pick(PALETTES);
+const stops = pal.c.map((h) => new THREE.Color(h));
+const colorAt = (h, out) => {
+  const f = (((h % 1) + 1) % 1) * stops.length, i = Math.floor(f);
+  return out.lerpColors(stops[i], stops[(i + 1) % stops.length], f - i);
+};
+
+const N = 97, K = 90, H = 0.5, C = (N - 1) / 2;
+let alive = new Uint8Array(N * N), hue = new Float32Array(N * N);
+let rule = CRYSTAL[0], phase = 'crystal', phaseEnd = 0;
+const TAU = Math.PI * 2;
+
+// 小さな種（対称な記号）を置く。種ごとに色相が違い、干渉して色の模様になる
+function glyph(cx, cy, h) {
+  const r = 1 + Math.floor(rand() * 2), bits = [];
+  for (let y = 0; y <= r; y++) for (let x = 0; x <= y; x++) if (rand() < 0.55) bits.push([x, y]);
+  if (!bits.length) bits.push([0, 0]);
+  for (const [x, y] of bits) for (const [a, b] of [[x, y], [y, x]]) for (const sx of [1, -1]) for (const sy of [1, -1]) {
+    const k = ((cy + b * sy + N) % N) * N + (cx + a * sx + N) % N;
+    alive[k] = 1; hue[k] = h;
+  }
+}
+function crystal() {
+  alive.fill(0);
+  rule = pick(CRYSTAL); phase = 'crystal';
+  const h0 = rand();
+  glyph(C, C, h0);
+  // 線形なパリティ則では、複数の種のフラクタルが重ね合わされて干渉模様になる
+  const n = rand() < 0.25 ? 0 : 1 + Math.floor(rand() * 2);
+  for (let i = 0; i < n; i++) {
+    const d = 5 + Math.floor(rand() * 16), diag = rand() < 0.5;
+    for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const [px, py] = diag ? [ax - ay, ax + ay] : [ax, ay];
+      glyph(C + px * d, C + py * d, h0 + (i + 1) * 0.33);
+    }
+  }
+  drift = (rand() < 0.5 ? -1 : 1) * (0.006 + rand() * 0.01);
+  // 結晶は画面の外で育て、完成したフラクタルを生命の種にする。Life は決定的なので対称性がずっと保たれる
+  const name = rule.name, g = pick([7, 11, 15, 15, 23]);
+  for (let i = 0; i < g; i++) step();
+  life();
+  return `CRYSTAL ${name.split(' ')[0]} ×${g} → ${rule.name}`;
+}
+function life() {
+  rule = pick(LIFE); phase = 'life';
+  phaseEnd = gen + 70 + Math.floor(rand() * 60);
+  return 'MUTATION → ' + rule.name;
+}
+let drift = 0.01, changed = 0, still = 0;
+function step() {
+  const na = new Uint8Array(N * N), nh = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    let n = 0, sx = 0, sy = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const k = ((y + dy + N) % N) * N + (x + dx + N) % N;
+      if (alive[k]) { n++; sx += Math.cos(hue[k] * TAU); sy += Math.sin(hue[k] * TAU); }
+    }
+    const k = y * N + x;
+    if (alive[k]) { if (rule.s.includes(n)) { na[k] = 1; nh[k] = hue[k]; } }
+    else if (rule.b.includes(n)) {
+      na[k] = 1; nh[k] = Math.atan2(sy, sx) / TAU + (phase === 'crystal' ? drift : 0);
+    }
+    if (na[k] !== alive[k]) changed++;
+  }
+  alive = na; hue = nh;
+}
+
+let eventText = '';
+function note(t) { eventText = t; lastEventStep = gen; }
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 90, 185);
+
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 500);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(38) / 2) / Math.pow(camera.aspect, 0.6))) : 38; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(92, 30, 92);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -18, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.4;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(40, 80, 30);
+scene.add(sun);
+
+const geo = new THREE.BoxGeometry(0.9, H, 0.9);
+const tower = new THREE.Group();
+scene.add(tower);
+const layers = [];
+for (let i = 0; i < K; i++) {
+  const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.1 }), N * N);
+  mesh.setColorAt(0, new THREE.Color());
+  mesh.count = 0;
+  mesh.userData.born = -1;
+  tower.add(mesh);
+  layers.push(mesh);
+}
+const m4 = new THREE.Matrix4(), col = new THREE.Color();
+let gen = 0, lastEventStep = 0;
+function pushLayer() {
+  const mesh = layers[gen % K];
+  let c = 0;
+  for (let k = 0; k < N * N; k++) if (alive[k]) {
+    m4.makeTranslation(k % N - C, 0, Math.floor(k / N) - C);
+    mesh.setMatrixAt(c, m4);
+    mesh.setColorAt(c, colorAt(hue[k], col));
+    c++;
+  }
+  mesh.count = c;
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  mesh.userData.born = gen;
+  return c;
+}
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.35, 0.92));
+composer.addPass(new OutputPass());
+
+note(crystal());
+let pop = pushLayer();
+
+const info = document.getElementById('info');
+let paused = false;
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') note(crystal());
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `018_parity-strata_${seed}_${gen}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+const STEP_MS = 110;
+let acc = 0, last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(100, now - last); last = now;
+  if (!paused) acc += dt;
+  while (acc >= STEP_MS) {
+    acc -= STEP_MS;
+    changed = 0;
+    step(); gen++;
+    pop = pushLayer();
+    still = changed < pop * 0.04 ? still + 1 : 0;
+    if (pop < N * N * 0.004 || still > 4 || gen >= phaseEnd) note(crystal());
+    else if (gen - lastEventStep > 30 && rand() < 0.03) note(life());
+  }
+  const frac = acc / STEP_MS;
+  for (const mesh of layers) {
+    if (mesh.userData.born < 0) continue;
+    const age = gen - mesh.userData.born + frac;
+    mesh.position.y = -age * H;
+    const fade = Math.max(0, 1 - age / K);
+    const hot = age < 1.5 ? 1.25 - age * 0.17 : 1;
+    mesh.material.color.setScalar(Math.pow(fade, 1.3) * hot * 1.15);
+    mesh.visible = age < K;
+  }
+  controls.update();
+  composer.render();
+  const flash = gen - lastEventStep < 25 ? `\n${eventText}` : '';
+  info.textContent = `018 · PARITY STRATA · ${rule.name} · ${pal.name} · seed ${seed} · gen ${gen}${flash}`;
+});
+</script>
+</body>
+</html>
