@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>002 — XOR Pyramid</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.45); pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+// 2D に拡張した Wolfram 型パリティ則（rule 90 / 150 の仲間）
+const VN = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const MOORE = [...VN, [1, 1], [1, -1], [-1, 1], [-1, -1]];
+const RULES = [
+  { name: 'VN-XOR · rule90²',   nb: VN,    self: false },
+  { name: 'VN+self · rule150²', nb: VN,    self: true },
+  { name: 'MOORE-XOR',          nb: MOORE, self: false },
+  { name: 'MOORE+self',         nb: MOORE, self: true },
+];
+const PALETTES = [
+  { name: 'Aurora', bg: '#04060a', body: '#10263d', glow: '#6ff7d2' },
+  { name: 'Ember',  bg: '#070403', body: '#2e1a12', glow: '#ffb35c' },
+  { name: 'Sakura', bg: '#07050b', body: '#2e1c38', glow: '#ff8fbf' },
+  { name: 'Moon',   bg: '#04060a', body: '#20252f', glow: '#dfe9ff' },
+];
+const rule = pick(RULES), pal = pick(PALETTES);
+
+const T = 64, N = 2 * T + 3, C = (N - 1) / 2;
+let grid = new Uint8Array(N * N);
+grid[C * N + C] = 1;
+const layers = [];
+for (let g = 0; g < T; g++) {
+  layers.push(grid);
+  const next = new Uint8Array(N * N);
+  for (let y = 1; y < N - 1; y++) for (let x = 1; x < N - 1; x++) {
+    let v = rule.self ? grid[y * N + x] : 0;
+    for (const [dx, dy] of rule.nb) v ^= grid[(y + dy) * N + x + dx];
+    next[y * N + x] = v;
+  }
+  grid = next;
+}
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.FogExp2(pal.bg, 0.006);
+
+const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.1, 1000);
+// ?????????????????????
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(35) / 2) / Math.pow(camera.aspect, 0.6))) : 35; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(T * 2.3, T * 1.25, T * 2.3);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, T * 0.45, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.3;
+
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.6));
+const key = new THREE.DirectionalLight(0xffffff, 1.4);
+key.position.set(1, 2, 1.5);
+scene.add(key);
+
+let count = 0;
+for (const L of layers) for (const v of L) count += v;
+
+const geo = new THREE.BoxGeometry(0.72, 0.22, 0.72);
+const gen = new Float32Array(count);
+geo.setAttribute('aGen', new THREE.InstancedBufferAttribute(gen, 1));
+const mat = new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.2 });
+const uTime = { value: 0 };
+mat.onBeforeCompile = (sh) => {
+  sh.uniforms.uTime = uTime;
+  sh.vertexShader = sh.vertexShader
+    .replace('#include <common>', '#include <common>\nattribute float aGen;\nvarying float vGen;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGen = aGen;');
+  sh.fragmentShader = sh.fragmentShader
+    .replace('#include <common>', '#include <common>\nuniform float uTime;\nvarying float vGen;')
+    .replace('#include <emissivemap_fragment>', `
+      float front = fract(uTime * 0.07) * 1.4 - 0.2;
+      float wave = exp(-pow((vGen - front) * 12.0, 2.0));
+      totalEmissiveRadiance = vColor * (0.18 + 1.6 * wave);`);
+};
+
+const mesh = new THREE.InstancedMesh(geo, mat, count);
+const m = new THREE.Matrix4(), col = new THREE.Color();
+const body = new THREE.Color(pal.body), glow = new THREE.Color(pal.glow);
+let i = 0;
+layers.forEach((L, g) => {
+  const prev = layers[g - 1];
+  for (let k = 0; k < N * N; k++) if (L[k]) {
+    const x = k % N - C, z = Math.floor(k / N) - C;
+    m.makeTranslation(x, T - g, z);
+    mesh.setMatrixAt(i, m);
+    const edge = !prev || !prev[k];
+    col.lerpColors(body, glow, edge ? 0.85 : 0.15 + 0.2 * (g / T));
+    mesh.setColorAt(i, col);
+    gen[i] = g / (T - 1);
+    i++;
+  }
+});
+mesh.count = 0;
+scene.add(mesh);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.7, 0.45, 0.5));
+composer.addPass(new OutputPass());
+
+document.getElementById('info').textContent = `002 · XOR PYRAMID · ${rule.name} · ${pal.name} · seed ${seed}`;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `002_xor-pyramid_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+const t0 = performance.now();
+renderer.setAnimationLoop(() => {
+  const t = (performance.now() - t0) / 1000;
+  const p = Math.min(1, t / 5);
+  mesh.count = Math.floor(count * (1 - Math.pow(1 - p, 3)));
+  uTime.value = t;
+  controls.update();
+  composer.render();
+});
+</script>
+</body>
+</html>

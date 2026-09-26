@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>004 — Morphogen Terrain</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+// Gray-Scott 反応拡散の「相」。f/k が移ろうことで模様が変態し続ける
+// 粒が等間隔に並ぶ相（斑点・分裂・穴）は不気味に見えるので使わない
+const REGIMES = [
+  { name: 'CORAL',       f: 0.0545, k: 0.0620 },
+  { name: 'WORMS',       f: 0.0780, k: 0.0610 },
+  { name: 'MAZE',        f: 0.0290, k: 0.0570 },
+  { name: 'FINGERPRINT', f: 0.0370, k: 0.0600 },
+  { name: 'CHAOS',       f: 0.0260, k: 0.0510 },
+];
+const PALETTES = [
+  { name: 'Neon',   bg: '#05040a', c: ['#120a2a', '#ff2fb3', '#00e5ff', '#f7f7ff'] },
+  { name: 'Lava',   bg: '#070302', c: ['#1a0602', '#c2210f', '#ffb347', '#fff4d6'] },
+  { name: 'Lagoon', bg: '#020608', c: ['#04161f', '#0a7f8c', '#7dff3a', '#f0ffe8'] },
+  { name: '墨と金', bg: '#0a0908', c: ['#15120f', '#5a4632', '#d4a95a', '#fbf1dc'] },
+];
+const FINISHES = [
+  { name: 'LACQUER', mat: () => new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.25, metalness: 0.2, clearcoat: 1 }) },
+  { name: 'CLAY',    mat: () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 }) },
+  { name: 'CHROME',  mat: () => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.15, metalness: 0.85 }) },
+  { name: 'WIRE',    mat: () => new THREE.MeshBasicMaterial({ vertexColors: true, wireframe: true }) },
+];
+const pal = pick(PALETTES), finish = pick(FINISHES);
+const stops = pal.c.map((h) => new THREE.Color(h));
+const ramp = (t, out) => { t = Math.min(0.999, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.floor(t); return out.lerpColors(stops[i], stops[i + 1], t - i); };
+
+const S = 160;
+let U = new Float32Array(S * S).fill(1), V = new Float32Array(S * S);
+let U2 = new Float32Array(S * S), V2 = new Float32Array(S * S);
+function drop(n = 6) {
+  for (let i = 0; i < n; i++) {
+    const cx = Math.floor(rand() * S), cy = Math.floor(rand() * S), r = 2 + Math.floor(rand() * 5);
+    for (let y = -r; y <= r; y++) for (let x = -r; x <= r; x++) {
+      const k = ((cy + y + S) % S) * S + (cx + x + S) % S; U[k] = 0.5; V[k] = 0.25 + rand() * 0.1;
+    }
+  }
+}
+drop(14);
+let regime = pick(REGIMES), f = regime.f, k = regime.k;
+function stepRD() {
+  for (let y = 0; y < S; y++) {
+    const ym = ((y - 1 + S) % S) * S, y0 = y * S, yp = ((y + 1) % S) * S;
+    for (let x = 0; x < S; x++) {
+      const xm = (x - 1 + S) % S, xp = (x + 1) % S, i = y0 + x;
+      const lu = 0.2 * (U[ym + x] + U[yp + x] + U[y0 + xm] + U[y0 + xp])
+               + 0.05 * (U[ym + xm] + U[ym + xp] + U[yp + xm] + U[yp + xp]) - U[i];
+      const lv = 0.2 * (V[ym + x] + V[yp + x] + V[y0 + xm] + V[y0 + xp])
+               + 0.05 * (V[ym + xm] + V[ym + xp] + V[yp + xm] + V[yp + xp]) - V[i];
+      const uvv = U[i] * V[i] * V[i];
+      U2[i] = U[i] + (lu - uvv + f * (1 - U[i]));
+      V2[i] = V[i] + (0.5 * lv + uvv - (k + f) * V[i]);
+    }
+  }
+  [U, U2] = [U2, U]; [V, V2] = [V2, V];
+}
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 90, 210);
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 500);
+// ?????????????????????
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(38) / 2) / Math.pow(camera.aspect, 0.6))) : 38; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(76, 56, 76);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.35;
+
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(-30, 50, 20);
+scene.add(sun);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new (await import('three/addons/environments/RoomEnvironment.js')).RoomEnvironment()).texture;
+
+const geo = new THREE.PlaneGeometry(90, 90, S - 1, S - 1);
+geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(S * S * 3), 3));
+const terrain = new THREE.Mesh(geo, finish.mat());
+terrain.rotation.x = -Math.PI / 2;
+scene.add(terrain);
+
+// 大地のうねり（地殻）。事件ごとに別の地形へゆっくり隆起・沈降する
+const noise = new SimplexNoise({ random: rand });
+const fbm = (x, y, o = 4) => { let a = 0, amp = 1, fr = 1; for (let i = 0; i < o; i++) { a += amp * noise.noise(x * fr, y * fr); amp *= 0.5; fr *= 2; } return a; };
+const FORMS = {
+  MOUNTAINS: (x, y) => { const r = 1 - Math.abs(fbm(x * 0.022, y * 0.022)); return r * r * 1.2 - 0.2; },
+  DUNES:     (x, y) => 0.5 + 0.5 * Math.sin(x * 0.11 + fbm(x * 0.02, y * 0.02, 2) * 3),
+  CRATER:    (x, y) => { const r = Math.hypot(x, y); return Math.exp(-(((r - 26) / 9) ** 2)) - 0.5 * Math.exp(-((r / 13) ** 2)) + 0.15 * fbm(x * 0.05, y * 0.05, 2); },
+  MESA:      (x, y) => { const v = (fbm(x * 0.018, y * 0.018, 3) + 1) * 2.5; const f0 = Math.floor(v); return (f0 + Math.pow(v - f0, 6)) / 5; },
+};
+let formName = pick(Object.keys(FORMS)), amp = 0;
+const baseCur = new Float32Array(S * S), baseTgt = new Float32Array(S * S);
+const maskCur = new Float32Array(S * S), maskTgt = new Float32Array(S * S);
+function uplift(name) {
+  formName = name ?? pick(Object.keys(FORMS).filter((n) => n !== formName));
+  amp = 8 + rand() * 12;
+  const ox = rand() * 100, oy = rand() * 100;
+  for (let i = 0; i < S * S; i++) {
+    const x = (i % S) / (S - 1) * 90 - 45, y = Math.floor(i / S) / (S - 1) * 90 - 45;
+    baseTgt[i] = FORMS[formName](x, y) * amp;
+    maskTgt[i] = 0.5 + 0.5 * noise.noise(x * 0.03 + ox, y * 0.03 + oy);
+  }
+}
+uplift(formName);
+
+const pos = geo.attributes.position, colAttr = geo.attributes.color, col = new THREE.Color();
+const HEIGHT = 10;
+function updateMesh(t) {
+  const breathe = 1 + 0.12 * Math.sin(t * 0.00025);
+  for (let i = 0; i < S * S; i++) {
+    baseCur[i] += (baseTgt[i] - baseCur[i]) * 0.012;
+    maskCur[i] += (maskTgt[i] - maskCur[i]) * 0.012;
+    const v = V[i], b = baseCur[i] * breathe;
+    pos.setZ(i, b + v * HEIGHT * (0.3 + 0.9 * maskCur[i]));
+    ramp(v * 2.6 + Math.max(0, b / (amp || 1)) * 0.12, col);
+    col.multiplyScalar(0.6 + 0.4 * Math.min(1, Math.max(0, b / (amp || 1) + 0.3)));
+    colAttr.setXYZ(i, col.r, col.g, col.b);
+  }
+  pos.needsUpdate = true; colAttr.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+let target = regime, eventText = '', eventAt = -1e9, lastSwitch = 0, lastCheck = 0, paused = false;
+function nextRegime() {
+  target = pick(REGIMES.filter((r) => r !== target));
+  eventText = 'PHASE → ' + target.name; eventAt = performance.now();
+}
+const info = document.getElementById('info');
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') { drop(8); eventText = 'SEEDS'; eventAt = performance.now(); }
+  if (e.key === 'm') nextRegime();
+  if (e.key === 'u') { uplift(); eventText = 'UPLIFT → ' + formName; eventAt = performance.now(); }
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `004_morphogen-terrain_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+renderer.setAnimationLoop((now) => {
+  if (!paused) {
+    for (let i = 0; i < 12; i++) stepRD();
+    f += (target.f - f) * 0.004; k += (target.k - k) * 0.004;
+    if (now - lastSwitch > 22000 + rand() * 14000) {
+      lastSwitch = now;
+      if (rand() < 0.5) { uplift(); eventText = 'UPLIFT → ' + formName; eventAt = now; } else nextRegime();
+    }
+    if (now - lastCheck > 3000) {
+      lastCheck = now;
+      let mx = 0; for (let i = 0; i < S * S; i++) mx = Math.max(mx, V[i]);
+      if (mx < 0.05) { drop(10); eventText = 'EXTINCTION → SEEDS'; eventAt = now; }
+    }
+    updateMesh(now);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  const flash = now - eventAt < 4000 ? `\n${eventText}` : '';
+  info.textContent = `004 · MORPHOGEN TERRAIN · ${formName} · ${target.name} · ${finish.name} · ${pal.name} · seed ${seed}${flash}`;
+});
+</script>
+</body>
+</html>
