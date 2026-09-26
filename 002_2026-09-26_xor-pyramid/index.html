@@ -16,7 +16,7 @@
 } }
 </script>
 <style>#info, .info, #hud, .hud { display: none !important; }</style>
-<script>addEventListener('dblclick', () => { const u = new URL(location.href); u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
 </head>
 <body>
 <div id="info"></div>
