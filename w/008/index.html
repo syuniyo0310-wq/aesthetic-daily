@@ -3,17 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Life Strata — Aesthetic</title>
+<title>Spore Chandelier — Aesthetic</title>
 <meta name="description" content="ジェネラティブアート。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Aesthetic">
-<meta property="og:title" content="Life Strata — Aesthetic">
+<meta property="og:title" content="Spore Chandelier — Aesthetic">
 <meta property="og:description" content="ジェネラティブアート。">
-<meta property="og:url" content="https://aesthetic-daily-rho.vercel.app/life-strata">
-<meta property="og:image" content="https://aesthetic-daily-rho.vercel.app/001_2026-09-26_life-strata/shot_1.png">
-<meta name="twitter:image" content="https://aesthetic-daily-rho.vercel.app/001_2026-09-26_life-strata/shot_1.png">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Life Strata — Aesthetic">
+<meta property="og:url" content="https://aesthetic-daily-rho.vercel.app/w/008/">
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Spore Chandelier — Aesthetic">
 <meta name="twitter:description" content="ジェネラティブアート。">
 <meta name="theme-color" content="#000000">
 <link rel="icon" href="data:,">
@@ -23,13 +22,13 @@
 </style>
 </head>
 <body>
-<iframe id="art" title="Life Strata" allow="fullscreen"></iframe>
+<iframe id="art" title="Spore Chandelier" allow="fullscreen"></iframe>
 <script>
-  const W = {"dir":"001_2026-09-26_life-strata","seed":20260926,"view":null};
+  const W = {"dir":"008_2026-09-27_spore-chandelier","seed":28,"view":null};
   const seed = new URLSearchParams(location.search).get('seed') ?? W.seed;
   const art = document.getElementById('art');
   const cam = W.view ? `&cam=${[W.view.x, W.view.y, W.view.z, W.view.tx, W.view.ty, W.view.tz].join(',')}` : '';
-  art.src = `../${W.dir}/index.html${seed != null ? `?seed=${seed}` : ''}${cam}`;
+  art.src = `../../${W.dir}/index.html${seed != null ? `?seed=${seed}` : ''}${cam}`;
   art.addEventListener('load', () => art.contentWindow.focus());
 </script>
 </body>

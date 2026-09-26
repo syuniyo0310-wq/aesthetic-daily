@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>012 — Slime Viaduct</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.48); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALETTES = [
+  { name: 'Neon', bg: '#07060e', a: '#ff2fb3', b: '#3cf0c6' },
+  { name: '夜桜', bg: '#100b18', a: '#f0a3c0', b: '#8fd6ee' },
+  { name: '墨と金', bg: '#0a0a0a', a: '#e4c57a', b: '#e07070' },
+  { name: '深海', bg: '#061018', a: '#4fe0e0', b: '#f2c14e' },
+];
+const pal = pick(PALETTES);
+const cols = [new THREE.Color(pal.a), new THREE.Color(pal.b)];
+
+const G = 48, WORLD = 36, AGENTS = 96, MAX = 3200;
+const SA = new Float32Array(G * G), SB = new Float32Array(G * G);
+const agents = [];
+const nests = [{ x: -10, z: -8 }, { x: 11, z: 9 }];
+
+const wrap = (i) => ((i % G) + G) % G;
+function gi(x, z) {
+  return wrap(Math.floor((z / WORLD + 0.5) * G)) * G + wrap(Math.floor((x / WORLD + 0.5) * G));
+}
+function sample(grid, x, z) {
+  const u = (x / WORLD + 0.5) * G, v = (z / WORLD + 0.5) * G;
+  const x0 = Math.floor(u), z0 = Math.floor(v), fx = u - x0, fz = v - z0;
+  const gget = (ix, iz) => grid[wrap(iz) * G + wrap(ix)];
+  return gget(x0, z0) * (1 - fx) * (1 - fz) + gget(x0 + 1, z0) * fx * (1 - fz)
+    + gget(x0, z0 + 1) * (1 - fx) * fz + gget(x0 + 1, z0 + 1) * fx * fz;
+}
+function height(sp, x, z) {
+  const wave = 3.2 + 3.4 * Math.sin(x * 0.16) * Math.cos(z * 0.14);
+  return wave + Math.min(4.5, sample(sp ? SB : SA, x, z) * 3.2);
+}
+function stamp(grid, x, z, r, amt) {
+  for (let zz = -r; zz <= r; zz++) for (let xx = -r; xx <= r; xx++) {
+    if (xx * xx + zz * zz > r * r) continue;
+    const i = gi(x + xx * WORLD / G, z + zz * WORLD / G);
+    grid[i] = Math.min(1.6, grid[i] + amt);
+  }
+}
+function nestAgents() {
+  agents.length = 0;
+  stamp(SA, nests[0].x, nests[0].z, 3, 0.8);
+  stamp(SB, nests[1].x, nests[1].z, 3, 0.8);
+  for (let i = 0; i < AGENTS; i++) {
+    const sp = i < AGENTS / 2 ? 0 : 1, n = nests[sp];
+    agents.push({ x: n.x + (rand() - 0.5) * 4, z: n.z + (rand() - 0.5) * 4, a: rand() * Math.PI * 2, sp });
+  }
+}
+function migrate() {
+  nests[0] = { x: (rand() - 0.5) * 22, z: (rand() - 0.5) * 22 };
+  nests[1] = { x: (rand() - 0.5) * 22, z: (rand() - 0.5) * 22 };
+  for (const a of agents) {
+    if (rand() < 0.45) {
+      const n = nests[a.sp];
+      a.x = n.x + (rand() - 0.5) * 3; a.z = n.z + (rand() - 0.5) * 3;
+    }
+  }
+}
+
+const segP = new Float32Array(MAX * 6), segC = new Float32Array(MAX * 6);
+let head = 0, drawn = 0;
+function pushSeg(ax, ay, az, bx, by, bz, sp) {
+  const i = (head % MAX) * 6, c = cols[sp];
+  segP[i] = ax; segP[i + 1] = ay; segP[i + 2] = az;
+  segP[i + 3] = bx; segP[i + 4] = by; segP[i + 5] = bz;
+  for (let k = 0; k < 6; k += 3) { segC[i + k] = c.r; segC[i + k + 1] = c.g; segC[i + k + 2] = c.b; }
+  head++; drawn = Math.min(MAX, drawn + 1);
+}
+
+function diffuse(grid) {
+  const n = new Float32Array(G * G);
+  for (let z = 0; z < G; z++) for (let x = 0; x < G; x++) {
+    const i = z * G + x;
+    n[i] = (grid[i] * 4 + grid[z * G + (x + 1) % G] + grid[z * G + (x + G - 1) % G]
+      + grid[((z + 1) % G) * G + x] + grid[((z + G - 1) % G) * G + x]) * 0.125 * 0.986;
+  }
+  grid.set(n);
+}
+function step() {
+  const sense = 1.8, sa = 0.55, stepLen = 0.42;
+  for (const ag of agents) {
+    const grid = ag.sp ? SB : SA;
+    const senseAt = (off) => sample(grid, ag.x + Math.cos(ag.a + off) * sense, ag.z + Math.sin(ag.a + off) * sense);
+    const f = senseAt(0), l = senseAt(sa), r = senseAt(-sa);
+    if (l > f && l > r) ag.a += 0.35;
+    else if (r > f && r > l) ag.a -= 0.35;
+    else ag.a += (rand() - 0.5) * 0.18;
+    const x0 = ag.x, z0 = ag.z, y0 = height(ag.sp, x0, z0);
+    ag.x += Math.cos(ag.a) * stepLen; ag.z += Math.sin(ag.a) * stepLen;
+    const lim = WORLD / 2 - 0.8;
+    if (ag.x > lim) { ag.x = lim; ag.a = Math.PI - ag.a; }
+    if (ag.x < -lim) { ag.x = -lim; ag.a = Math.PI - ag.a; }
+    if (ag.z > lim) { ag.z = lim; ag.a = -ag.a; }
+    if (ag.z < -lim) { ag.z = -lim; ag.a = -ag.a; }
+    const y1 = height(ag.sp, ag.x, ag.z);
+    if ((ag.x - x0) ** 2 + (ag.z - z0) ** 2 < 2.4) pushSeg(x0, y0, z0, ag.x, y1, ag.z, ag.sp);
+    grid[gi(ag.x, ag.z)] = Math.min(1.6, grid[gi(ag.x, ag.z)] + 0.28);
+  }
+  diffuse(SA); diffuse(SB);
+}
+
+nestAgents();
+for (let i = 0; i < 90; i++) step();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 55, 150);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 300);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(16, 12, 18);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.25;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.7));
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(segP, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(segC, 3));
+geo.setDrawRange(0, 0);
+scene.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.88 })));
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.42, 0.3, 0.93));
+composer.addPass(new OutputPass());
+
+let paused = false, eventText = '', eventAt = -1e9, steps = 0, nextEvent = 2000;
+function doMigrate() {
+  migrate(); eventText = 'MIGRATION'; eventAt = performance.now();
+  nextEvent = steps + 360 + Math.floor(rand() * 180);
+}
+const info = document.getElementById('info');
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') doMigrate();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `012_slime-viaduct_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+
+renderer.setAnimationLoop((now) => {
+  if (!paused) {
+    step(); step(); steps += 2;
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    geo.setDrawRange(0, drawn * 2);
+    if (steps > nextEvent) doMigrate();
+  }
+  controls.update();
+  composer.render();
+  const flash = now - eventAt < 3500 ? `\n${eventText}` : '';
+  info.textContent = `012 · SLIME VIADUCT · ${pal.name} · seed ${seed}${flash}`;
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>008 — Spore Chandelier</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.45); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALETTES = [
+  { name: 'Neon', bg: '#07060c', c: ['#ff2fb3', '#7cf7c6', '#ffe14d'] },
+  { name: '夜桜', bg: '#100b18', c: ['#3a2e5c', '#d77fa1', '#fbe7e9'] },
+  { name: '墨と金', bg: '#0a0a0a', c: ['#3a342c', '#c4a46a', '#f3ead7'] },
+  { name: '深海', bg: '#061018', c: ['#143d4f', '#3ec6c6', '#f2efe6'] },
+];
+const LOBES = ['drop', 'crescent', 'spire', 'ring'];
+const pal = pick(PALETTES);
+let lobe = pick(LOBES);
+const cols = pal.c.map((h) => new THREE.Color(h));
+
+const MAX = 2800, TIPS = 48, REACH = 16, STEP = 0.55;
+const segP = new Float32Array(MAX * 2 * 3), segC = new Float32Array(MAX * 2 * 3);
+let head = 0, drawn = 0;
+const tips = [];
+const attr = [];
+function lobePoint() {
+  const u = rand(), a = rand() * Math.PI * 2, side = rand() < 0.5 ? -1 : 1;
+  if (lobe === 'crescent') return [Math.cos(a) * 22 * side * 0.5 + 10, (u - 0.5) * 28, Math.sin(a) * 10];
+  if (lobe === 'spire') return [(rand() - 0.5) * 8, 24 - u * 58, (rand() - 0.5) * 8];
+  if (lobe === 'ring') return [Math.cos(a) * 18, (rand() - 0.5) * 8, Math.sin(a) * 18];
+  const y = 16 - u * 48, r = (0.25 + 0.75 * Math.sin(u * Math.PI)) * 15;
+  return [Math.cos(a) * r, y, Math.sin(a) * r];
+}
+function fillAttr() {
+  attr.length = 0;
+  for (let i = 0; i < 140; i++) attr.push(lobePoint());
+}
+function rootTip() {
+  const p = lobe === 'drop' || lobe === 'spire' ? [0, 18, 0] : lobePoint();
+  tips.push({ x: p[0], y: p[1], z: p[2], idle: 0, hue: Math.floor(rand() * cols.length) });
+}
+fillAttr();
+for (let i = 0; i < 8; i++) rootTip();
+
+function pushSeg(ax, ay, az, bx, by, bz, hue) {
+  const i = (head % MAX) * 6, c = cols[hue % cols.length];
+  segP[i] = ax; segP[i + 1] = ay; segP[i + 2] = az;
+  segP[i + 3] = bx; segP[i + 4] = by; segP[i + 5] = bz;
+  for (let k = 0; k < 6; k += 3) { segC[i + k] = c.r; segC[i + k + 1] = c.g; segC[i + k + 2] = c.b; }
+  head++; drawn = Math.min(MAX, drawn + 1);
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 70, 160);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 400);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(18, 6, 78);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -4, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.4;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.7));
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(segP, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(segC, 3));
+geo.setDrawRange(0, 0);
+scene.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 })));
+
+let paused = false, eventText = '', eventAt = -1e9, nextEvent = performance.now() + 18000;
+function retarget() {
+  lobe = pick(LOBES.filter((k) => k !== lobe));
+  fillAttr();
+  if (tips.length > 16) tips.length = 16;
+  rootTip();
+  eventText = `LOBE → ${lobe}`; eventAt = performance.now();
+  nextEvent = eventAt + 16000 + rand() * 12000;
+}
+function grow() {
+  if (attr.length < 24) fillAttr();
+  for (let t = tips.length - 1; t >= 0; t--) {
+    const tip = tips[t];
+    let best = -1, bd = REACH * REACH;
+    for (let i = 0; i < attr.length; i++) {
+      const dx = attr[i][0] - tip.x, dy = attr[i][1] - tip.y, dz = attr[i][2] - tip.z, d = dx * dx + dy * dy + dz * dz;
+      if (d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) { tip.idle++; if (tip.idle > 28) tips.splice(t, 1); continue; }
+    tip.idle = 0;
+    const a = attr[best], dx = a[0] - tip.x, dy = a[1] - tip.y, dz = a[2] - tip.z;
+    const len = Math.hypot(dx, dy, dz) || 1, nx = tip.x + dx / len * STEP, ny = tip.y + dy / len * STEP, nz = tip.z + dz / len * STEP;
+    pushSeg(tip.x, tip.y, tip.z, nx, ny, nz, tip.hue);
+    tip.x = nx; tip.y = ny; tip.z = nz;
+    if (len < 1.6) {
+      attr.splice(best, 1);
+      if (tips.length < TIPS && rand() < 0.22) tips.push({ x: nx, y: ny, z: nz, idle: 0, hue: (tip.hue + 1) % cols.length });
+    }
+  }
+  if (tips.length < 6) rootTip();
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.color.needsUpdate = true;
+  geo.setDrawRange(0, Math.min(drawn, MAX) * 2);
+}
+
+const info = document.getElementById('info');
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') retarget();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `008_spore-chandelier_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    grow();
+    if (now > nextEvent) retarget();
+  }
+  controls.update();
+  const flash = now - eventAt < 4000 ? `\n${eventText}` : '';
+  info.textContent = `008 · SPORE CHANDELIER · ${lobe} · ${pal.name} · seed ${seed}${flash}`;
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

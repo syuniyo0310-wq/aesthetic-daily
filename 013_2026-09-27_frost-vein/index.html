@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>013 — Frost Vein</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.48); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALETTES = [
+  { name: '氷華', bg: '#07090f', c: ['#d8e7ff', '#7ec8e3', '#f4efe6'] },
+  { name: '墨と金', bg: '#0a0908', c: ['#c4a46a', '#f3ead7', '#8c2f39'] },
+  { name: 'Neon', bg: '#08060e', c: ['#ff2fb3', '#7cf7c6', '#ffe14d'] },
+  { name: '夜桜', bg: '#110b16', c: ['#d77fa1', '#fbe7e9', '#3a2e5c'] },
+];
+const pal = pick(PALETTES);
+const cols = pal.c.map((h) => new THREE.Color(h));
+
+const MAX = 2600, G = 36, WORLD = 44, TIPS = 22;
+const occ = new Uint8Array(G * G * G);
+const walkers = [];
+const segP = new Float32Array(MAX * 6), segC = new Float32Array(MAX * 6);
+let head = 0, drawn = 0;
+
+function voxel(x, y, z) {
+  const ix = Math.floor((x / WORLD + 0.5) * G);
+  const iy = Math.floor((y / WORLD + 0.5) * G);
+  const iz = Math.floor((z / WORLD + 0.5) * G);
+  if (ix < 0 || iy < 0 || iz < 0 || ix >= G || iy >= G || iz >= G) return -1;
+  return (iy * G + iz) * G + ix;
+}
+function grain(i) {
+  let n = (i * 747796405 + seed) >>> 0;
+    n = Math.imul(n ^ (n >>> 15), 1 | n);
+  return ((n ^ (n >>> 14)) >>> 0) / 4294967296 < 0.11;
+}
+function pushSeg(ax, ay, az, bx, by, bz, hue) {
+  const i = (head % MAX) * 6, c = cols[hue % cols.length];
+  segP[i] = ax; segP[i + 1] = ay; segP[i + 2] = az;
+  segP[i + 3] = bx; segP[i + 4] = by; segP[i + 5] = bz;
+  for (let k = 0; k < 6; k += 3) { segC[i + k] = c.r; segC[i + k + 1] = c.g; segC[i + k + 2] = c.b; }
+  head++; drawn = Math.min(MAX, drawn + 1);
+}
+function spawn(x, y, z, ax, ay, az, hue) {
+  if (walkers.length >= TIPS) return;
+  const len = Math.hypot(ax, ay, az) || 1;
+  walkers.push({ x, y, z, ax: ax / len, ay: ay / len, az: az / len, hue, idle: 0 });
+}
+function strike() {
+  const x = (rand() - 0.5) * 16, z = (rand() - 0.5) * 16, y = 6 + rand() * 10;
+  spawn(x, y, z, (rand() - 0.5), -0.4 - rand() * 0.5, (rand() - 0.5), Math.floor(rand() * cols.length));
+}
+
+function grow() {
+  const step = 0.38;
+  for (let t = walkers.length - 1; t >= 0; t--) {
+    const w = walkers[t];
+    const nx = w.x + w.ax * step, ny = w.y + w.ay * step, nz = w.z + w.az * step;
+    const id0 = voxel(w.x, w.y, w.z), id = voxel(nx, ny, nz);
+    if (id < 0 || ny < -14 || ny > 20) { walkers.splice(t, 1); continue; }
+    const hit = id !== id0 && id >= 0 && occ[id];
+    pushSeg(w.x, w.y, w.z, nx, ny, nz, w.hue);
+    w.x = nx; w.y = ny; w.z = nz;
+    if (id >= 0) occ[id] = 1;
+    if (grain(id)) {
+      const yaw = (rand() < 0.5 ? -1 : 1) * (0.45 + rand() * 0.55);
+      const c = Math.cos(yaw), s = Math.sin(yaw);
+      const ax = w.ax * c - w.az * s;
+      w.az = w.ax * s + w.az * c; w.ax = ax;
+    }
+    w.ax += w.x * 0.0015; w.az += w.z * 0.0015; w.ay -= 0.012;
+    const L = Math.hypot(w.ax, w.ay, w.az) || 1;
+    w.ax /= L; w.ay /= L; w.az /= L;
+    if (hit) {
+      walkers.splice(t, 1);
+      const hue = (w.hue + 1) % cols.length;
+      spawn(nx, ny, nz, w.ax + w.az * 0.5, w.ay, w.az - w.ax * 0.5, hue);
+      spawn(nx, ny, nz, w.ax - w.az * 0.5, w.ay, w.az + w.ax * 0.5, hue);
+      continue;
+    }
+    w.idle++;
+    if (w.idle > 220) walkers.splice(t, 1);
+  }
+  if (walkers.length < 3) strike();
+}
+
+strike(); strike(); strike(); strike();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 50, 130);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 300);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(2, 3, 26);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.45;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.65));
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(segP, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(segC, 3));
+geo.setDrawRange(0, 0);
+scene.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.92 })));
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.4, 0.28, 0.93));
+composer.addPass(new OutputPass());
+
+let paused = false, eventText = '', eventAt = -1e9, nextEvent = performance.now() + 9000;
+function bolt() {
+  strike(); eventText = 'STRIKE'; eventAt = performance.now();
+  nextEvent = eventAt + 8000 + rand() * 9000;
+}
+const info = document.getElementById('info');
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') bolt();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `013_frost-vein_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+
+renderer.setAnimationLoop((now) => {
+  if (!paused) {
+    grow(); grow(); grow();
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+    geo.setDrawRange(0, drawn * 2);
+    if (now > nextEvent) bolt();
+  }
+  controls.update();
+  composer.render();
+  const flash = now - eventAt < 3200 ? `\n${eventText}` : '';
+  info.textContent = `013 · FROST VEIN · ${pal.name} · seed ${seed}${flash}`;
+});
+</script>
+</body>
+</html>
