@@ -3,55 +3,39 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AI Aesthetic Artist — Daily</title>
-<meta name="description" content="毎朝 AI が生成するジェネラティブアート。ブラウザで触って遊べます。">
+<title>AI Aesthetic Artist</title>
+<meta name="description" content="AI が毎朝生成するジェネラティブアート。">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="AI Aesthetic Artist — Daily">
-<meta property="og:title" content="AI Aesthetic Artist — Daily">
-<meta property="og:description" content="毎朝 AI が生成するジェネラティブアート。ブラウザで触って遊べます。">
+<meta property="og:site_name" content="AI Aesthetic Artist">
+<meta property="og:title" content="AI Aesthetic Artist">
+<meta property="og:description" content="AI が毎朝生成するジェネラティブアート。">
 <meta property="og:url" content="https://syuniyo0310-wq.github.io/aesthetic-daily/">
 <meta property="og:image" content="https://syuniyo0310-wq.github.io/aesthetic-daily/007_2026-09-26_rule-ribbon/shot_1.png">
 <meta name="twitter:image" content="https://syuniyo0310-wq.github.io/aesthetic-daily/007_2026-09-26_rule-ribbon/shot_1.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="AI Aesthetic Artist — Daily">
-<meta name="twitter:description" content="毎朝 AI が生成するジェネラティブアート。ブラウザで触って遊べます。">
+<meta name="twitter:title" content="AI Aesthetic Artist">
+<meta name="twitter:description" content="AI が毎朝生成するジェネラティブアート。">
 <meta name="theme-color" content="#000000">
 <link rel="icon" href="data:,">
 <style>
-  body { margin: 0; background: #0a0a0c; color: #cfd2d8; font: 13px/1.6 ui-monospace, Menlo, monospace; letter-spacing: .08em; }
-  header { padding: 40px 24px 8px; max-width: 1400px; margin: 0 auto; }
-  h1 { font-size: 14px; font-weight: 400; letter-spacing: .3em; margin: 0 0 8px; color: #fff; }
-  header p { margin: 0; opacity: .65; }
-  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 22px; padding: 24px; max-width: 1400px; margin: 0 auto; }
-  a { color: inherit; text-decoration: none; }
-  .card .img { aspect-ratio: 1; background: #000; border-radius: 6px; overflow: hidden; }
-  .card img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .6s; }
-  .card:hover img { transform: scale(1.04); }
-  .card p { display: flex; justify-content: space-between; gap: 8px; margin: 8px 2px 0; }
-  .card .m { opacity: .45; }
-  footer { padding: 20px 24px 60px; max-width: 1400px; margin: 0 auto; opacity: .5; }
-  @media (max-width: 640px) {
-    main { grid-template-columns: 1fr 1fr; gap: 14px; padding: 16px; }
-    .card p { flex-direction: column; gap: 0; font-size: 11px; }
-  }
+  body { margin: 0; background: #050506; color: #cfd2d8; font: 12px/1.6 ui-monospace, Menlo, monospace; }
+  header { padding: 36px 24px 0; max-width: 1600px; margin: 0 auto; letter-spacing: .35em; font-size: 11px; opacity: .6; }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; padding: 24px; max-width: 1600px; margin: 0 auto; }
+  .card { display: block; aspect-ratio: 1; background: #000; overflow: hidden; }
+  .card img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform 1.2s cubic-bezier(.2,.7,.2,1), opacity .6s; opacity: .92; }
+  .card:hover img { transform: scale(1.03); opacity: 1; }
+  @media (max-width: 640px) { main { grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px; } header { padding: 24px 12px 6px; } }
 </style>
 </head>
 <body>
-<header><h1>AI AESTHETIC ARTIST — DAILY</h1><p>毎朝 AI が生成するジェネラティブアート。ブラウザで触って遊べます。<br>作品をタップすると、その場で動かして遊べます。</p></header>
+<header>AI AESTHETIC ARTIST</header>
 <main>
-  <a class="card" href="w/007/?seed=7">
-    <div class="img"><img loading="lazy" src="007_2026-09-26_rule-ribbon/shot_1.png" alt="Rule Ribbon"></div>
-    <p><span>007 · Rule Ribbon</span><span class="m">2026-09-26 · static</span></p></a>
-  <a class="card" href="w/004/?seed=21">
-    <div class="img"><img loading="lazy" src="004_2026-09-26_morphogen-terrain/shot_1.png" alt="Morphogen Terrain"></div>
-    <p><span>004 · Morphogen Terrain</span><span class="m">2026-09-26 · endless</span></p></a>
-  <a class="card" href="w/002/?seed=1">
-    <div class="img"><img loading="lazy" src="002_2026-09-26_xor-pyramid/shot_1.png" alt="XOR Pyramid"></div>
-    <p><span>002 · XOR Pyramid</span><span class="m">2026-09-26 · static</span></p></a>
-  <a class="card" href="w/001/?seed=20260926">
-    <div class="img"><img loading="lazy" src="001_2026-09-26_life-strata/shot_1.png" alt="Life Strata"></div>
-    <p><span>001 · Life Strata</span><span class="m">2026-09-26 · static</span></p></a>
+  <a class="card" href="w/007/?seed=7" title="Rule Ribbon"><img loading="lazy" src="007_2026-09-26_rule-ribbon/shot_1.png" alt="Rule Ribbon"></a>
+  <a class="card" href="w/006/?seed=12" title="Curl Nebula"><img loading="lazy" src="006_2026-09-26_curl-nebula/shot_1.png" alt="Curl Nebula"></a>
+  <a class="card" href="w/005/?seed=5" title="Slime Nations"><img loading="lazy" src="005_2026-09-26_slime-nations/shot_1.png" alt="Slime Nations"></a>
+  <a class="card" href="w/004/?seed=21" title="Morphogen Terrain"><img loading="lazy" src="004_2026-09-26_morphogen-terrain/shot_1.png" alt="Morphogen Terrain"></a>
+  <a class="card" href="w/003/?seed=11" title="Living Strata"><img loading="lazy" src="003_2026-09-26_living-strata/shot_1.png" alt="Living Strata"></a>
+  <a class="card" href="w/002/?seed=1" title="XOR Pyramid"><img loading="lazy" src="002_2026-09-26_xor-pyramid/shot_1.png" alt="XOR Pyramid"></a>
 </main>
-<footer><a href="controls.html">PC 向け: 全作品のキー操作ページ →</a></footer>
 </body>
 </html>

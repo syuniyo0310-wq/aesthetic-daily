@@ -1,15 +1,6 @@
 // 公開用（publish_site.mjs が自動生成）
 window.WORKS = [
  {
-  "no": "001",
-  "date": "2026-09-26",
-  "title": "Life Strata",
-  "dir": "001_2026-09-26_life-strata",
-  "motion": "static",
-  "seed": 20260926,
-  "keys": []
- },
- {
   "no": "002",
   "date": "2026-09-26",
   "title": "XOR Pyramid",
@@ -17,6 +8,26 @@ window.WORKS = [
   "motion": "static",
   "seed": 1,
   "keys": []
+ },
+ {
+  "no": "003",
+  "date": "2026-09-26",
+  "title": "Living Strata",
+  "dir": "003_2026-09-26_living-strata",
+  "motion": "endless",
+  "seed": 11,
+  "keys": [
+   {
+    "key": "e",
+    "label": "E",
+    "desc": "事件を発生（ルール変異・新種・リング・万華鏡）"
+   },
+   {
+    "key": " ",
+    "label": "Space",
+    "desc": "一時停止 / 再開"
+   }
+  ]
  },
  {
   "no": "004",
@@ -40,6 +51,46 @@ window.WORKS = [
     "key": "u",
     "label": "U",
     "desc": "隆起（山脈・砂丘・クレーター・台地へ地形が変わる）"
+   },
+   {
+    "key": " ",
+    "label": "Space",
+    "desc": "一時停止 / 再開"
+   }
+  ]
+ },
+ {
+  "no": "005",
+  "date": "2026-09-26",
+  "title": "Slime Nations",
+  "dir": "005_2026-09-26_slime-nations",
+  "motion": "endless",
+  "seed": 5,
+  "keys": [
+   {
+    "key": "e",
+    "label": "E",
+    "desc": "事件を発生（変異・移住・征服）"
+   },
+   {
+    "key": " ",
+    "label": "Space",
+    "desc": "一時停止 / 再開"
+   }
+  ]
+ },
+ {
+  "no": "006",
+  "date": "2026-09-26",
+  "title": "Curl Nebula",
+  "dir": "006_2026-09-26_curl-nebula",
+  "motion": "endless",
+  "seed": 12,
+  "keys": [
+   {
+    "key": "e",
+    "label": "E",
+    "desc": "器（シルエット）を変える"
    },
    {
     "key": " ",
