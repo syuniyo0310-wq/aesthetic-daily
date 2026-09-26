@@ -1,9 +1,3 @@
 {
-  "trailingSlash": true,
-  "rewrites": [
-    {
-      "source": "/:no(\\d{3})",
-      "destination": "/:no/"
-    }
-  ]
+  "trailingSlash": true
 }

@@ -3,17 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Living Strata — AI Aesthetic Artist</title>
+<title>Life Strata — AI Aesthetic Artist</title>
 <meta name="description" content="AI が毎朝生成するジェネラティブアート。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AI Aesthetic Artist">
-<meta property="og:title" content="Living Strata — AI Aesthetic Artist">
+<meta property="og:title" content="Life Strata — AI Aesthetic Artist">
 <meta property="og:description" content="AI が毎朝生成するジェネラティブアート。">
-<meta property="og:url" content="https://aesthetic-daily-rho.vercel.app/003">
-<meta property="og:image" content="https://aesthetic-daily-rho.vercel.app/003_2026-09-26_living-strata/shot_1.png">
-<meta name="twitter:image" content="https://aesthetic-daily-rho.vercel.app/003_2026-09-26_living-strata/shot_1.png">
+<meta property="og:url" content="https://aesthetic-daily-rho.vercel.app/life-strata">
+<meta property="og:image" content="https://aesthetic-daily-rho.vercel.app/001_2026-09-26_life-strata/shot_1.png">
+<meta name="twitter:image" content="https://aesthetic-daily-rho.vercel.app/001_2026-09-26_life-strata/shot_1.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Living Strata — AI Aesthetic Artist">
+<meta name="twitter:title" content="Life Strata — AI Aesthetic Artist">
 <meta name="twitter:description" content="AI が毎朝生成するジェネラティブアート。">
 <meta name="theme-color" content="#000000">
 <link rel="icon" href="data:,">
@@ -23,9 +23,9 @@
 </style>
 </head>
 <body>
-<iframe id="art" title="Living Strata" allow="fullscreen"></iframe>
+<iframe id="art" title="Life Strata" allow="fullscreen"></iframe>
 <script>
-  const W = {"dir":"003_2026-09-26_living-strata","seed":11};
+  const W = {"dir":"001_2026-09-26_life-strata","seed":20260926};
   const seed = new URLSearchParams(location.search).get('seed') ?? W.seed;
   const art = document.getElementById('art');
   art.src = `../${W.dir}/index.html${seed != null ? `?seed=${seed}` : ''}`;
