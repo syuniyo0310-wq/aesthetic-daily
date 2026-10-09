@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Marble Strata</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block}
+#hud{position:fixed;left:18px;bottom:14px;font:11px/1.6 ui-monospace,Menlo,monospace;letter-spacing:.12em;color:rgba(255,255,255,.5);pointer-events:none;white-space:pre}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let rs = seed >>> 0;
+const rand = () => { rs = (rs + 0x6D2B79F5) | 0; let t = Math.imul(rs ^ (rs >>> 15), 1 | rs); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const TAU = Math.PI * 2;
+const PALS = [
+  { name: 'Sumi & Gold', bg: '#0c0b09', c: ['#2a2824', '#6e6248', '#d4ae5c', '#f3e2b0'] },
+  { name: 'Ember', bg: '#100c0a', c: ['#2a3348', '#3a8f93', '#f2c14e', '#ff6b5b'] },
+  { name: 'Ice', bg: '#080c12', c: ['#1c3048', '#4d96ff', '#8fd3ff', '#e7f0ff'] },
+];
+const pal = PALS[Math.floor(rand() * PALS.length)];
+const stops = pal.c.map((h) => new THREE.Color(h));
+const col = new THREE.Color();
+const ramp = (t) => { t = Math.min(0.999, Math.max(0, t)) * (stops.length - 1); const i = Math.floor(t); return col.copy(stops[i]).lerp(stops[i + 1], t - i); };
+
+const RULES = [30, 54, 90, 110, 150];
+const CAP = 200, STEP = 0.9, NB = 6, MAXI = CAP * 9;
+let rule = RULES[Math.floor(rand() * RULES.length)];
+let cells = new Uint8Array(32); for (let i = 0; i < 32; i++) cells[i] = rand() < 0.4 ? 1 : 0;
+function ca() {
+  const n = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) { const idx = (cells[(i + 31) % 32] << 2) | (cells[i] << 1) | cells[(i + 1) % 32]; n[i] = (rule >> idx) & 1; }
+  cells = n;
+}
+const GADGETS = ['LOOP', 'DROP', 'LIFT', 'SPIRAL', 'WAVE', 'TURN', 'STAIR'];
+const px = new Float32Array(CAP), py = new Float32Array(CAP), pz = new Float32Array(CAP);
+const fx = new Float32Array(CAP), fy = new Float32Array(CAP), fz = new Float32Array(CAP);
+const born = new Int32Array(CAP), lay = new Uint8Array(CAP), who = new Uint8Array(CAP);
+let logical = 0, hx = 0, hy = 2, hz = 0, yaw = rand() * TAU, pitch = 0.15;
+let gadget = 'WAVE', gadgetLeft = 0, gadgetLen = 1;
+function armGadget(name) {
+  const prev = gadget;
+  gadget = name || GADGETS[Math.floor(rand() * GADGETS.length)];
+  if (!name && gadget === prev) gadget = GADGETS[(GADGETS.indexOf(gadget) + 3) % GADGETS.length];
+  const len = { LOOP: 22, DROP: 12, LIFT: 12, TURN: 16, STAIR: 26, SPIRAL: 28, WAVE: 24 };
+  gadgetLeft = gadgetLen = len[gadget] || 24;
+}
+function grow() {
+  if (gadgetLeft <= 0) armGadget();
+  const phase = gadgetLen - gadgetLeft;
+  gadgetLeft--;
+  if ((logical & 3) === 0) ca();
+  const b1 = cells[8];
+  if (gadget === 'LOOP') { if (phase < 18) { yaw += TAU / 18; pitch = 0; } else { yaw += 0.05; pitch = 0; } }
+  else if (gadget === 'DROP') { pitch = -1.28; yaw += b1 ? 0.05 : -0.05; }
+  else if (gadget === 'LIFT') { pitch = 1.12; yaw += 0.08; }
+  else if (gadget === 'SPIRAL') { yaw += 0.4; pitch = 0.4; }
+  else if (gadget === 'TURN') { if (phase === 6) yaw += b1 ? 2.3 : -2.3; else { yaw += 0.02; pitch *= 0.6; } }
+  else if (gadget === 'STAIR') { pitch = (phase % 5) < 2 ? 1.08 : -0.06; yaw += 0.04; }
+  else { yaw += b1 ? 0.16 : -0.12; pitch = Math.sin(phase * 0.72) * 0.75; }
+  const dist = Math.hypot(hx, hz);
+  const free = gadget === 'LOOP' || gadget === 'DROP' || gadget === 'TURN';
+  if (!free && dist > 16) { let d = Math.atan2(-hx, -hz) - yaw; if (d > Math.PI) d -= TAU; if (d < -Math.PI) d += TAU; yaw += d * 0.16; }
+  if (Math.abs(hy) > 13) pitch += -Math.sign(hy) * 0.22;
+  const cp = Math.cos(pitch), ffx = cp * Math.sin(yaw), ffy = Math.sin(pitch), ffz = cp * Math.cos(yaw);
+  hx += ffx * STEP; hy += ffy * STEP; hz += ffz * STEP;
+  const i = logical % CAP;
+  px[i] = hx; py[i] = hy; pz[i] = hz; fx[i] = ffx; fy[i] = ffy; fz[i] = ffz; born[i] = logical; lay[i] = 0; who[i] = 0;
+  logical++;
+}
+const bu = new Float32Array(NB), bsp = new Float32Array(NB);
+function park(i) { bu[i] = Math.max(0, logical - CAP + 12 + i * 10); bsp[i] = 9 + (i % 3) * 5; }
+let rush = 0;
+function balls(dt) {
+  if (rush > 0) rush -= dt;
+  for (let b = 0; b < NB; b++) {
+    if (bu[b] < logical - CAP + 3 || bu[b] > logical - 2) park(b);
+    const i0 = Math.floor(bu[b]) % CAP, slope = fy[(i0 + CAP) % CAP];
+    const prev = Math.floor(bu[b]);
+    const downhill = slope < -0.45 ? 2.6 : slope < -0.12 ? 1.5 : 0.55;
+    bu[b] += bsp[b] * downhill * (rush > 0 ? 2.2 : 1) * dt;
+    const now = Math.floor(bu[b]);
+    if (now !== prev && now < logical && now >= logical - CAP) {
+      const k = ((now % CAP) + CAP) % CAP; if (lay[k] < 8) lay[k]++; who[k] = b % 4;
+    }
+  }
+}
+for (let n = 0; n < CAP - 5; n++) grow();
+for (let b = 0; b < NB; b++) park(b);
+for (let n = 0; n < 360; n++) balls(1 / 30);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.008);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 300);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov(); camera.position.set(16, 14, 30);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.45;
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.AmbientLight(0xffffff, 0.48));
+const dir = new THREE.DirectionalLight(0xffffff, 0.85); dir.position.set(12, 20, 8); scene.add(dir);
+
+const blocks = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.18 }), MAXI);
+blocks.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXI * 3), 3);
+blocks.frustumCulled = false; scene.add(blocks);
+const ballsM = new THREE.InstancedMesh(new THREE.SphereGeometry(0.46, 16, 12), new THREE.MeshStandardMaterial({ roughness: 0.22, metalness: 0.4, emissive: 0x553318, emissiveIntensity: 0.65 }), NB);
+scene.add(ballsM);
+const dummy = new THREE.Object3D(), look = new THREE.Vector3(), rail = new THREE.Color('#c2b29a'), aim = new THREE.Vector3();
+function draw() {
+  let n = 0, ax = 0, ay = 0, az = 0, an = 0;
+  const lo = Math.max(0, logical - CAP);
+  for (let a = lo; a < logical; a++) {
+    const i = a % CAP, age = logical - 1 - born[i];
+    if (age > 178) continue;
+    const fall = Math.max(0, age - 125) * 0.18;
+    dummy.position.set(px[i], py[i] - fall, pz[i]);
+    look.set(px[i] + fx[i], py[i] + fy[i] - fall, pz[i] + fz[i]);
+    dummy.lookAt(look); dummy.scale.set(0.32, 0.14, 0.86); dummy.updateMatrix();
+    blocks.setMatrixAt(n, dummy.matrix); blocks.setColorAt(n, rail); n++;
+    for (let k = 0; k < lay[i]; k++) {
+      dummy.position.set(px[i], py[i] - fall - (k + 1) * 0.34, pz[i]);
+      dummy.rotation.set(0, a * 0.15, 0);
+      const w = 0.26 + k * 0.035;
+      dummy.scale.set(w, 0.28, w); dummy.updateMatrix();
+      blocks.setMatrixAt(n, dummy.matrix); ramp((who[i] + k * 0.18) / 4); blocks.setColorAt(n, col); n++;
+    }
+    if (age > 20 && age < 140) { ax += px[i]; ay += py[i]; az += pz[i]; an++; }
+  }
+  blocks.count = Math.max(1, n); blocks.instanceMatrix.needsUpdate = true; blocks.instanceColor.needsUpdate = true;
+  for (let b = 0; b < NB; b++) {
+    const u = bu[b], i0 = Math.floor(u), f = u - i0, iA = ((i0 % CAP) + CAP) % CAP, iB = ((i0 + 1) % CAP + CAP) % CAP;
+    dummy.position.set(px[iA] + (px[iB] - px[iA]) * f, py[iA] + (py[iB] - py[iA]) * f + 0.28, pz[iA] + (pz[iB] - pz[iA]) * f);
+    dummy.rotation.set(0, 0, 0); dummy.scale.setScalar(1); dummy.updateMatrix(); ballsM.setMatrixAt(b, dummy.matrix);
+  }
+  ballsM.instanceMatrix.needsUpdate = true;
+  if (an) aim.set(ax / an, ay / an - 0.6, az / an);
+  controls.target.lerp(aim, 0.12);
+}
+draw();
+controls.target.copy(aim);
+camera.position.copy(aim).add(new THREE.Vector3(20, 16, 32));
+
+let ev = '', evAt = -1e9, next = performance.now() + 7000, paused = false, growAcc = 0;
+function fire() {
+  armGadget();
+  if (rand() < 0.65) rush = 2.4;
+  if (rand() < 0.4) rule = RULES[Math.floor(rand() * RULES.length)];
+  ev = gadget; evAt = performance.now(); next = evAt + 7000 + rand() * 3000;
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') fire();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `028_marble-strata_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('hud');
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    if (now > next) fire();
+    growAcc += dt * 7; while (growAcc >= 1) { grow(); growAcc--; }
+    balls(dt); draw();
+  }
+  controls.update(); renderer.render(scene, camera);
+  hud.textContent = `028 · MARBLE STRATA · ${gadget} · rule ${rule} · seed ${seed}${now - evAt < 2400 ? '\n' + ev : ''}`;
+});
+</script></body></html>

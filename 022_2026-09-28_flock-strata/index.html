@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Flock Strata</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALETTES = [
+  { name: 'Neon',     bg: '#06040c', c: ['#ff2fb3', '#00e5ff', '#7dff3a', '#ffe14d'] },
+  { name: '浮世絵',   bg: '#0b1020', c: ['#e63946', '#f1faee', '#e9c46a', '#457b9d'] },
+  { name: '墨と金',   bg: '#07060a', c: ['#c9a24a', '#f3e6c4', '#b5523b', '#6f8a9a'] },
+  { name: 'Spectrum', bg: '#05050a', c: ['#ff3b30', '#ffcc00', '#34c759', '#00c7ff', '#ff2d92'] },
+];
+const pal = pick(PALETTES);
+const COLORS = pal.c.map((h) => new THREE.Color(h));
+
+// --- 群れ（Boids）：分離・整列・結合。種族ごとに性格が違う ---
+// SCHOOL＝揃って流れる帯、SWARM＝ほどけた雲、MILL＝中心を回る渦（積むと螺旋の管になる）
+const MODES = {
+  SCHOOL: { ali: 0.09, coh: 0.004, sep: 0.9, mill: 0, speed: 0.75 },
+  SWARM:  { ali: 0.012, coh: 0.012, sep: 1.3, mill: 0, speed: 0.55 },
+  MILL:   { ali: 0.04, coh: 0.006, sep: 0.9, mill: 0.045, speed: 0.7 },
+};
+const RD = 40, R = 6.5, R2 = R * R, SEP2 = 2.4 * 2.4, OTHER2 = 3.4 * 3.4;
+const S = 3 + Math.floor(rand() * 2), PER = Math.floor(640 / S), M = S * PER;
+const px = new Float32Array(M), py = new Float32Array(M), vx = new Float32Array(M), vy = new Float32Array(M);
+const sp = new Uint8Array(M), dens = new Uint8Array(M);
+const species = [];
+for (let k = 0; k < S; k++) species.push({ mode: pick(Object.keys(MODES)), color: k % COLORS.length });
+function spawn(k, cx, cy, r, dir) {
+  for (let i = k * PER; i < (k + 1) * PER; i++) {
+    const a = rand() * Math.PI * 2, d = Math.sqrt(rand()) * r;
+    px[i] = cx + Math.cos(a) * d; py[i] = cy + Math.sin(a) * d;
+    vx[i] = Math.cos(dir) * 0.5 + (rand() - 0.5) * 0.2; vy[i] = Math.sin(dir) * 0.5 + (rand() - 0.5) * 0.2; sp[i] = k;
+  }
+}
+for (let k = 0; k < S; k++) { const a = (k / S) * Math.PI * 2 + rand(); spawn(k, Math.cos(a) * RD * 0.5, Math.sin(a) * RD * 0.5, 6 + rand() * 5, a + Math.PI * (0.5 + rand())); }
+
+let pred = null, scatter = 0;
+const ax = new Float32Array(M), ay = new Float32Array(M);
+const GC = 14, GW = (RD * 2.4) / GC, head = new Int32Array(GC * GC), next = new Int32Array(M);
+const cellOf = (x, y) => Math.max(0, Math.min(GC - 1, Math.floor((x + RD * 1.2) / GW))) + GC * Math.max(0, Math.min(GC - 1, Math.floor((y + RD * 1.2) / GW)));
+function step() {
+  const cx = new Float32Array(S), cy = new Float32Array(S);
+  for (let i = 0; i < M; i++) { cx[sp[i]] += px[i] / PER; cy[sp[i]] += py[i] / PER; }
+  head.fill(-1);
+  for (let i = 0; i < M; i++) { const c = cellOf(px[i], py[i]); next[i] = head[c]; head[c] = i; }
+  for (let i = 0; i < M; i++) {
+    const P = MODES[species[sp[i]].mode];
+    let n = 0, avx = 0, avy = 0, mx = 0, my = 0, sx = 0, sy = 0;
+    const c0 = cellOf(px[i], py[i]), gx = c0 % GC, gy = (c0 - gx) / GC;
+    for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
+      if (gx + ox < 0 || gx + ox >= GC || gy + oy < 0 || gy + oy >= GC) continue;
+      for (let j = head[c0 + ox + oy * GC]; j >= 0; j = next[j]) {
+      if (i === j) continue;
+      const dx = px[j] - px[i], dy = py[j] - py[i], d2 = dx * dx + dy * dy;
+      if (d2 > R2) continue;
+      if (sp[j] === sp[i]) {
+        n++; avx += vx[j]; avy += vy[j]; mx += dx; my += dy;
+        if (d2 < SEP2) { sx -= dx / (d2 + 0.1); sy -= dy / (d2 + 0.1); }
+      } else if (d2 < OTHER2) { sx -= 1.6 * dx / (d2 + 0.1); sy -= 1.6 * dy / (d2 + 0.1); }
+    } }
+    dens[i] = n;
+    let fx = sx * P.sep * 0.1, fy = sy * P.sep * 0.1;
+    if (n) {
+      const coh = scatter > 0 ? -P.coh * 2 : P.coh;
+      fx += P.ali * (avx / n - vx[i]) + coh * mx / n * 2; fy += P.ali * (avy / n - vy[i]) + coh * my / n * 2;
+    }
+    if (P.mill) {
+      const dx = px[i] - cx[sp[i]], dy = py[i] - cy[sp[i]], d = Math.hypot(dx, dy) + 0.01;
+      fx += P.mill * (-dy / d) - 0.004 * dx * (d > 9 ? 1 : 0); fy += P.mill * (dx / d) - 0.004 * dy * (d > 9 ? 1 : 0);
+    }
+    const r = Math.hypot(px[i], py[i]);
+    if (r > RD * 0.8) { fx -= (px[i] / r) * 0.03 * (r - RD * 0.8); fy -= (py[i] / r) * 0.03 * (r - RD * 0.8); }
+    if (pred) {
+      const dx = px[i] - pred.x, dy = py[i] - pred.y, d2 = dx * dx + dy * dy;
+      if (d2 < 120) { fx += dx / (d2 + 1) * 1.2; fy += dy / (d2 + 1) * 1.2; }
+    }
+    ax[i] = fx; ay[i] = fy;
+  }
+  for (let i = 0; i < M; i++) {
+    const P = MODES[species[sp[i]].mode];
+    vx[i] += ax[i]; vy[i] += ay[i];
+    const v = Math.hypot(vx[i], vy[i]) + 1e-6, c = Math.min(P.speed, Math.max(P.speed * 0.5, v)) / v;
+    vx[i] *= c; vy[i] *= c; px[i] += vx[i]; py[i] += vy[i];
+  }
+  if (pred) {
+    // 捕食者は一番混んでいる群れの中心へ突っ込み、群れを割る
+    let best = 0, bi = 0;
+    for (let i = 0; i < M; i += 7) if (dens[i] > best) { best = dens[i]; bi = i; }
+    const dx = px[bi] - pred.x, dy = py[bi] - pred.y, d = Math.hypot(dx, dy) + 0.01;
+    pred.x += dx / d * 1.1; pred.y += dy / d * 1.1;
+    if (--pred.life <= 0) pred = null;
+  }
+  if (scatter > 0) scatter--;
+}
+
+const EVENTS = {
+  predator() { const a = rand() * Math.PI * 2; pred = { x: Math.cos(a) * RD, y: Math.sin(a) * RD, life: 90 + Math.floor(rand() * 60) }; return 'PREDATOR'; },
+  mutate() { const k = Math.floor(rand() * S), sp0 = species[k]; sp0.mode = pick(Object.keys(MODES).filter((m) => m !== sp0.mode)); return `SPECIES ${k} → ${sp0.mode}`; },
+  scatter() { scatter = 30 + Math.floor(rand() * 30); return 'SCATTER'; },
+  newcomer() { const k = Math.floor(rand() * S), a = rand() * Math.PI * 2; species[k] = { mode: pick(Object.keys(MODES)), color: (species[k].color + 1 + Math.floor(rand() * (COLORS.length - 1))) % COLORS.length };
+    spawn(k, Math.cos(a) * RD * 0.75, Math.sin(a) * RD * 0.75, 5, a + Math.PI); return `NEW SPECIES ${k}`; },
+};
+let eventText = '', lastEventStep = 0, nextEventIn = 70, gen = 0;
+function fireEvent(name) { eventText = EVENTS[name ?? pick(Object.keys(EVENTS))](); lastEventStep = gen; }
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+scene.fog = new THREE.Fog(pal.bg, 85, 185);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.45;
+
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, 0.1, 500);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(38) / 2) / Math.pow(camera.aspect, 0.6))) : 38; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(88, 26, 88);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -20, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.4;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+
+scene.add(new THREE.HemisphereLight(0xffffff, pal.bg, 0.8));
+const sun = new THREE.DirectionalLight(0xffffff, 1.8);
+sun.position.set(40, 80, 30);
+scene.add(sun);
+
+// 密度で2つの質感：はぐれ＝小さな艶の粒、群れの中＝密度に応じて太る半金属の帯
+const CLASSES = [
+  { mat: { roughness: 0.15, metalness: 0.0 }, bright: 1.2 },
+  { mat: { roughness: 0.35, metalness: 0.6 }, bright: 0.85 },
+];
+const K = 120, H = 0.42;
+const geo = new THREE.BoxGeometry(1, H, 1);
+const layers = [];
+for (let i = 0; i < K; i++) {
+  const set = CLASSES.map((c) => {
+    const mesh = new THREE.InstancedMesh(geo, new THREE.MeshStandardMaterial(c.mat), M);
+    mesh.setColorAt(0, new THREE.Color());
+    mesh.count = 0;
+    scene.add(mesh);
+    return mesh;
+  });
+  layers.push({ set, born: -1 });
+}
+const m4 = new THREE.Matrix4(), col = new THREE.Color();
+function pushLayer() {
+  const L = layers[gen % K], cnt = [0, 0];
+  for (let i = 0; i < M; i++) {
+    const d = dens[i], ci = d < 5 ? 0 : 1, w = ci ? 0.5 + Math.min(d, 20) * 0.025 : 0.38, mesh = L.set[ci];
+    m4.makeScale(w, 1, w).setPosition(px[i], 0, py[i]);
+    mesh.setMatrixAt(cnt[ci], m4);
+    col.copy(COLORS[species[sp[i]].color]).multiplyScalar(CLASSES[ci].bright);
+    mesh.setColorAt(cnt[ci], col);
+    cnt[ci]++;
+  }
+  L.set.forEach((mesh, i) => { mesh.count = cnt[i]; mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true; });
+  L.born = gen;
+}
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.3, 0.35, 0.93));
+composer.addPass(new OutputPass());
+
+// 開いた瞬間から積層が満ちているように、先に1スタック分を進めておく
+for (let i = 0; i < K; i++) {
+  step(); gen++; pushLayer();
+  if (gen - lastEventStep > nextEventIn) { fireEvent(); nextEventIn = 60 + Math.floor(rand() * 90); }
+}
+const info = document.getElementById('info');
+let paused = false;
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') fireEvent();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `022_flock-strata_${seed}_${gen}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+const STEP_MS = 90;
+let acc = 0, last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(100, now - last); last = now;
+  if (!paused) acc += dt;
+  while (acc >= STEP_MS) {
+    acc -= STEP_MS;
+    step(); gen++;
+    pushLayer();
+    if (gen - lastEventStep > nextEventIn) { fireEvent(); nextEventIn = 60 + Math.floor(rand() * 90); }
+  }
+  const frac = acc / STEP_MS;
+  for (const L of layers) {
+    if (L.born < 0) continue;
+    const a = gen - L.born + frac;
+    const fade = Math.max(0, 1 - a / K), hot = a < 1.5 ? 1.2 - a * 0.13 : 1;
+    for (const mesh of L.set) {
+      mesh.position.y = -a * H;
+      mesh.material.color.setScalar(Math.pow(fade, 1.3) * hot * 1.1);
+      mesh.visible = a < K;
+    }
+  }
+  controls.update();
+  composer.render();
+  const flash = gen - lastEventStep < 25 ? `\n${eventText}` : '';
+  info.textContent = `022 · FLOCK STRATA · ${species.map((x) => x.mode).join(' / ')} · ${pal.name} · seed ${seed} · gen ${gen}${flash}`;
+});
+</script>
+</body>
+</html>

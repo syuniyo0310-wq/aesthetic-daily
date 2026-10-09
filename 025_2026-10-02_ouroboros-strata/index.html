@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Ouroboros Strata</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#hud{position:fixed;left:10px;bottom:8px;font:10px monospace;color:#6c6c6c;letter-spacing:.06em;pointer-events:none}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const Q = new URLSearchParams(location.search);
+const seed = +(Q.get('seed') || Math.floor(Math.random() * 1e5));
+function mulberry(s) { return () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const R = mulberry(seed);
+
+// 断面 G×G の円板の Life を、輪の周方向（時間）に N 層並べる。頭が一周すると最古の層を上書きする
+const G = 48, N = 300, RING = 62, GAP = 14, CAP = 1500, GPS = 12;
+const C = (G - 1) / 2, RAD2 = (G / 2 - 1.5) ** 2;
+
+const PALS = [
+  ['Neon', ['#ff2fa8', '#ffb02e', '#b6ff3a', '#2ef0ff', '#7a5cff', '#ff2fa8']],
+  ['Ink & Gold', ['#4a4038', '#8a6a3a', '#d8a94a', '#f1dca4', '#8a6a3a']],
+  ['Ukiyo', ['#1d3b6e', '#3f7fb0', '#e8d9b5', '#c8442f', '#1d3b6e']],
+  ['Coral', ['#ff6b5a', '#ffb07a', '#ffe0b8', '#7fd6c8', '#3a8fa0', '#ff6b5a']],
+  ['Spectrum', ['#ff3b3b', '#ffd23b', '#3bff7a', '#3bb8ff', '#b43bff', '#ff3b3b']],
+];
+const pal = PALS[Math.floor(R() * PALS.length)];
+const pc = pal[1].map(c => new THREE.Color(c));
+function palCol(t, out) {
+  t = ((t % 1) + 1) % 1 * (pc.length - 1);
+  const i = Math.floor(t), f = t - i;
+  return out.copy(pc[i]).lerp(pc[Math.min(i + 1, pc.length - 1)], f);
+}
+
+const mask = s => s.split('').reduce((m, d) => m | 1 << +d, 0);
+const RULES = [
+  { name: 'Conway B3/S23', b: mask('3'), s: mask('23') },
+  { name: 'HighLife B36/S23', b: mask('36'), s: mask('23') },
+  { name: 'Move B368/S245', b: mask('368'), s: mask('245') },
+  { name: 'Coral B3/S45678', b: mask('3'), s: mask('45678') },
+  { name: 'Day&Night B3678/S34678', b: mask('3678'), s: mask('34678') },
+  { name: 'Amoeba B357/S1358', b: mask('357'), s: mask('1358') },
+];
+let base = RULES[R() < 0.6 ? 0 : 1], rule = base, ruleLeft = 0;
+
+const inside = new Uint8Array(G * G);
+let area = 0;
+for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) if ((x - C) ** 2 + (y - C) ** 2 < RAD2) { inside[y * G + x] = 1; area++; }
+let alive = new Uint8Array(G * G), hue = new Float32Array(G * G);
+let nAlive = new Uint8Array(G * G), nHue = new Float32Array(G * G);
+const born = new Uint8Array(G * G);
+
+function blob(cx, cy, r, h, p) {
+  for (let y = Math.max(0, cy - r); y <= Math.min(G - 1, cy + r); y++)
+    for (let x = Math.max(0, cx - r); x <= Math.min(G - 1, cx + r); x++) {
+      const i = y * G + x;
+      if (inside[i] && (x - cx) ** 2 + (y - cy) ** 2 <= r * r && R() < p) { alive[i] = 1; hue[i] = h + (R() - .5) * .04; }
+    }
+}
+const randPt = () => { for (;;) { const x = Math.floor(R() * G), y = Math.floor(R() * G); if (inside[y * G + x]) return [x, y]; } };
+function newSpecies() { const [x, y] = randPt(); blob(x, y, 4 + Math.floor(R() * 4), R(), .5); }
+
+function step() {
+  let pop = 0;
+  for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) {
+    const i = y * G + x;
+    nAlive[i] = 0; born[i] = 0;
+    if (!inside[i]) continue;
+    let n = 0, hs = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= G || yy >= G) continue;
+      const j = yy * G + xx;
+      if (alive[j]) { n++; hs += hue[j]; }
+    }
+    if (alive[i]) { if (rule.s >> n & 1) { nAlive[i] = 1; nHue[i] = hue[i]; } }
+    else if (rule.b >> n & 1) { nAlive[i] = 1; born[i] = 1; nHue[i] = hs / n + (R() - .5) * .015; }
+    pop += nAlive[i];
+  }
+  [alive, nAlive] = [nAlive, alive]; [hue, nHue] = [nHue, hue];
+  return pop;
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x000000, 0.0017);
+const BASE_FOV = 38;
+const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 1, 2000);
+camera.position.set(0, 105, 195);
+function fitFov() {
+  const a = innerWidth / innerHeight;
+  camera.aspect = a;
+  camera.fov = a < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(BASE_FOV) / 2) * 1.6 / a)) : BASE_FOV;
+  camera.updateProjectionMatrix();
+}
+fitFov();
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+controls.target.set(0, -6, 0);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.8); key.position.set(90, 170, 70); scene.add(key);
+const rim = new THREE.DirectionalLight(0x6688ff, 0.5); rim.position.set(-120, 40, -90); scene.add(rim);
+
+const geo = new THREE.BoxGeometry(1, 1, 1);
+const ring = new THREE.Group(); scene.add(ring);
+const layers = [];
+const tmpC = new THREE.Color(), m4 = new THREE.Matrix4(), pos = new THREE.Vector3(), scl = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+for (let k = 0; k < N; k++) {
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.15 });
+  const mesh = new THREE.InstancedMesh(geo, mat, CAP);
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(CAP * 3), 3);
+  mesh.count = 0; mesh.frustumCulled = false;
+  ring.add(mesh);
+  layers.push({ mesh, alive: new Uint8Array(G * G), hue: new Float32Array(G * G) });
+}
+
+let head = -1, gen = 0;
+function writeLayer() {
+  head = (head + 1) % N;
+  const L = layers[head], th = head / N * Math.PI * 2, dth = Math.PI * 2 / N;
+  const q = new THREE.Quaternion().setFromAxisAngle(up, -th);
+  const ct = Math.cos(th), st = Math.sin(th);
+  let n = 0;
+  L.alive.set(alive); L.hue.set(hue);
+  for (let y = 0; y < G && n < CAP; y++) for (let x = 0; x < G && n < CAP; x++) {
+    const i = y * G + x;
+    if (!alive[i]) continue;
+    const rho = RING + (x - C);
+    pos.set(rho * ct, (y - C) * 1.0, rho * st);
+    scl.set(0.92, 0.92, rho * dth * 0.97);
+    m4.compose(pos, q, scl);
+    L.mesh.setMatrixAt(n, m4);
+    palCol(hue[i], tmpC).multiplyScalar(born[i] ? 1.18 : 0.9);
+    L.mesh.setColorAt(n, tmpC);
+    n++;
+  }
+  L.mesh.count = n;
+  L.mesh.instanceMatrix.needsUpdate = true;
+  L.mesh.instanceColor.needsUpdate = true;
+}
+
+let nextEvent = 60 + Math.floor(R() * 120), lastEvent = '';
+function event(kind) {
+  const kinds = ['mutate', 'species', 'ring', 'kaleido', 'bite', 'bite'];
+  kind = kind || kinds[Math.floor(R() * kinds.length)];
+  if (kind === 'mutate') {
+    const others = RULES.filter(r => r !== rule);
+    rule = others[Math.floor(R() * others.length)]; ruleLeft = 30 + Math.floor(R() * 70);
+    if (R() < 0.25) base = R() < 0.5 ? RULES[0] : RULES[1];
+  } else if (kind === 'species') { newSpecies(); newSpecies(); }
+  else if (kind === 'ring') {
+    const r = 6 + R() * 14, h = R();
+    for (let a = 0; a < 6.283; a += 0.04) {
+      const x = Math.round(C + r * Math.cos(a)), y = Math.round(C + r * Math.sin(a)), i = y * G + x;
+      if (inside[i]) { alive[i] = 1; hue[i] = h; }
+    }
+  } else if (kind === 'kaleido') {
+    for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) {
+      const sx = x < C ? x : G - 1 - x, sy = y < C ? y : G - 1 - y;
+      const a = Math.min(sx, sy), b = Math.max(sx, sy), j = b * G + a, i = y * G + x;
+      alive[i] = alive[j]; hue[i] = hue[j];
+    }
+  } else if (kind === 'bite') {
+    const old = layers[(head + 1) % N];
+    for (let i = 0; i < G * G; i++) if (old.alive[i] && inside[i]) { alive[i] = 1; hue[i] = old.hue[i]; }
+  }
+  lastEvent = kind;
+  nextEvent = gen + 60 + Math.floor(R() * 120);
+}
+
+function tick() {
+  const pop = step(); gen++;
+  if (ruleLeft > 0 && --ruleLeft === 0) rule = base;
+  if (pop < area * 0.015) { for (let k = 0; k < 3; k++) newSpecies(); lastEvent = 'rebirth'; }
+  else if (pop > area * 0.42 && ruleLeft === 0) { rule = RULES[R() < 0.5 ? 2 : 0]; ruleLeft = 40; lastEvent = 'crowd'; }
+  if (gen >= nextEvent) event();
+  writeLayer();
+}
+
+const nSp = 3 + Math.floor(R() * 3);
+for (let k = 0; k < nSp; k++) newSpecies();
+writeLayer();
+for (let k = 0; k < N - GAP; k++) tick();
+
+function shade() {
+  for (let k = 0; k < N; k++) {
+    const age = (head - k + N) % N, L = layers[k];
+    L.mesh.visible = age < N - GAP;
+    L.mesh.material.color.setScalar(0.22 + 1.0 * Math.exp(-age / 170) + (age < 3 ? 0.15 : 0));
+  }
+}
+
+const hud = document.getElementById('hud');
+let paused = false, acc = 0, last = performance.now();
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'e') event();
+  else if (e.key === ' ') { paused = !paused; e.preventDefault(); }
+  else if (k === 'r') { Q.set('seed', Math.floor(Math.random() * 1e5)); location.search = Q; }
+  else if (k === 's') { const a = document.createElement('a'); a.download = `025_ouroboros_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitFov(); });
+
+function loop(t) {
+  const dt = Math.min(0.1, (t - last) / 1000); last = t;
+  if (!paused) { acc += dt * GPS; while (acc >= 1) { tick(); acc--; } }
+  shade();
+  ring.rotation.y += paused ? 0 : dt * 0.02;
+  controls.update();
+  renderer.render(scene, camera);
+  hud.textContent = `025 · OUROBOROS STRATA · ${rule.name} · ${pal[0]} · seed ${seed} · gen ${gen}${lastEvent ? ' · ' + lastEvent : ''}`;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

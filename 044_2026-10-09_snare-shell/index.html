@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Snare Shell</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#hud{position:fixed;left:10px;bottom:8px;font:10px monospace;color:#666;pointer-events:none}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const Q = new URLSearchParams(location.search);
+const seed = Q.has('seed') ? +Q.get('seed') : Math.floor(Math.random() * 1e6);
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry(seed * 7919 + 104729);
+const pick = a => a[Math.floor(rnd() * a.length)];
+
+const PALS = {
+  NEON: ['#ff2e88', '#29e3ff', '#b6ff3b', '#a65cff'],
+  'SUMI-GOLD': ['#8a6a3a', '#e0b860', '#f6e7bf', '#5a4a3a'],
+  UKIYO: ['#2c5d8f', '#d2513f', '#efe1c0', '#4fa39a'],
+  EMBER: ['#ff5a1f', '#ffb347', '#c2185b', '#7a3cff'],
+  GLACIER: ['#3a7bd5', '#9ee7ff', '#e8f6ff', '#8d6cab'],
+};
+const palName = pick(Object.keys(PALS)), pal = PALS[palName].map(c => new THREE.Color(c));
+const FORMS = [{ n: 'FUNNEL', wb: 2.2, wt: 7.2 }, { n: 'CHALICE', wb: 1.6, wt: 9.4 }, { n: 'BOWL', wb: 3.2, wt: 8.4 }, { n: 'TULIP', wb: 4.2, wt: 9.8 }];
+const form = pick(FORMS), HT = pick([8, 8, 10]);
+const N = pick([520, 700, 880]), T = 36, V = 0.42, EC = 0.16, RIN = 0.5 + rnd() * 0.9;
+let beta0 = (46 + rnd() * 10) * Math.PI / 180, beta = beta0;
+let e = 0, eT = 0, nextEvent = 300, lastEv = '—', frame = 0;
+
+const R = Array.from({ length: N }, () => ({ x: 0, z: 0, dx: 0, dz: 0, phi: 0, j: 0, life: 0, max: 1, hue: new THREE.Color(), tr: new Float32Array(T * 3), h: 0, n: 0 }));
+function halfW(z, phi) { return (form.wb + (form.wt - form.wb) * z / HT) * (1 - e * Math.sin(phi) ** 2); }
+function spawn(r) {
+  r.phi = rnd() * Math.PI * 2; r.z = HT * (0.05 + 0.9 * rnd());
+  r.x = RIN + rnd() * (halfW(r.z, r.phi) * 0.95 - RIN);
+  r.j = (rnd() - 0.5) * 0.014;
+  const b = beta + r.j; r.dx = Math.cos(b) * (rnd() < 0.5 ? -1 : 1); r.dz = Math.sin(b) * (rnd() < 0.5 ? -1 : 1);
+  r.life = 0; r.max = 900 + Math.floor(rnd() * 900); r.n = 0;
+  const f = r.phi / (Math.PI * 2) * pal.length, i = Math.floor(f);
+  r.hue.copy(pal[i % pal.length]).lerp(pal[(i + 1) % pal.length], f - i);
+  const p = toWorld(r); for (let k = 0; k < T; k++) r.tr.set(p, k * 3);
+}
+const tmp = [0, 0, 0];
+function toWorld(r) { tmp[0] = r.x * Math.cos(r.phi); tmp[1] = r.z - HT / 2; tmp[2] = r.x * Math.sin(r.phi); return tmp; }
+
+function move(r) {
+  let rem = V;
+  r.x = Math.min(halfW(r.z, r.phi) * 0.999, Math.max(RIN + 1e-4, r.x));
+  for (let guard = 0; guard < 6 && rem > 1e-6; guard++) {
+    const s = 1 - e * Math.sin(r.phi) ** 2, c = form.wb * s, k = (form.wt - form.wb) / HT * s;
+    let t = Infinity, w = -1, q;
+    if (r.dz < 0) { q = -r.z / r.dz; if (q < t) { t = q; w = 0; } }
+    if (r.dz > 0) { q = (HT - r.z) / r.dz; if (q < t) { t = q; w = 1; } }
+    q = (c + k * r.z - r.x) / (r.dx - k * r.dz); if (q > 1e-7 && q < t) { t = q; w = 2; }
+    if (r.dx < 0) { q = (RIN - r.x) / r.dx; if (q > 1e-7 && q < t) { t = q; w = 3; } }
+    if (t > rem) { r.x += r.dx * rem; r.z += r.dz * rem; return; }
+    r.x += r.dx * t; r.z += r.dz * t; rem -= t;
+    const nx = w < 2 ? 0 : (w === 2 ? -1 : 1), nz = w === 0 ? 1 : w === 1 ? -1 : w === 2 ? k : 0;
+    const ax = -r.dx, az = r.dz;
+    if (ax * nx + az * nz > 0) { r.dx = ax; r.dz = az; } else { r.dx = -ax; r.dz = -az; }
+    const b = beta + r.j; r.dx = Math.sign(r.dx) * Math.cos(b); r.dz = Math.sign(r.dz) * Math.sin(b);
+    r.x += r.dx * 1e-5; r.z += r.dz * 1e-5;
+    if (w >= 2) { r.phi += 2.4 * Math.max(0, e - EC) * Math.sin(2 * r.phi); r.n++; }
+    r.z = Math.min(HT, Math.max(0, r.z));
+  }
+}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0); scene.fog = new THREE.Fog(0, 18, 46);
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(16, 9, 22);
+const controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.5;
+function fitFov() { const a = innerWidth / innerHeight; camera.aspect = a; camera.fov = a < 1 ? Math.min(95, 2 * Math.atan(Math.tan(21 * Math.PI / 180) / a) * 180 / Math.PI) : 42; camera.updateProjectionMatrix(); }
+fitFov();
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitFov(); });
+
+const NV = N * (T - 1) * 2, pos = new Float32Array(NV * 3), colr = new Float32Array(NV * 3);
+const g = new THREE.BufferGeometry();
+g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(colr, 3));
+const lines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+lines.frustumCulled = false; scene.add(lines);
+
+function event(kind) {
+  kind = kind || (e < EC ? pick(['flatten', 'flatten', 'tune', 'burst']) : pick(['round', 'round', 'tune', 'burst']));
+  if (kind === 'flatten') eT = 0.3 + rnd() * 0.12;
+  if (kind === 'round') eT = rnd() * 0.1;
+  if (kind === 'tune') beta0 = (44 + rnd() * 12) * Math.PI / 180;
+  if (kind === 'burst') for (const r of R) if (rnd() < 0.45) spawn(r);
+  lastEv = kind; nextEvent = frame + 360 + Math.floor(rnd() * 300);
+}
+function sim() {
+  frame++;
+  if (frame >= nextEvent) event();
+  e += (eT - e) * 0.01;
+  beta += (beta0 + 0.03 * Math.sin(frame * 0.004) - beta) * 0.01;
+  for (const r of R) {
+    if (++r.life > r.max) spawn(r);
+    move(r); r.h = (r.h + 1) % T; r.tr.set(toWorld(r), r.h * 3);
+  }
+}
+for (const r of R) { spawn(r); r.life = Math.floor(rnd() * r.max); }
+for (let i = 0; i < 1200; i++) sim();
+nextEvent = frame + 150;
+
+function build() {
+  let o = 0;
+  for (const r of R) {
+    const fade = Math.min(1, r.life / 50, (r.max - r.life) / 50) * (0.012 + 0.09 * Math.min(1, (r.life / 700) ** 2));
+    for (let k = 0; k < T - 1; k++) {
+      const a = (r.h - k + T) % T, b = (a - 1 + T) % T, f1 = fade * (1 - k / T), f2 = fade * (1 - (k + 1) / T);
+      pos[o] = r.tr[a * 3]; pos[o + 1] = r.tr[a * 3 + 1]; pos[o + 2] = r.tr[a * 3 + 2];
+      pos[o + 3] = r.tr[b * 3]; pos[o + 4] = r.tr[b * 3 + 1]; pos[o + 5] = r.tr[b * 3 + 2];
+      colr[o] = r.hue.r * f1; colr[o + 1] = r.hue.g * f1; colr[o + 2] = r.hue.b * f1;
+      colr[o + 3] = r.hue.r * f2; colr[o + 4] = r.hue.g * f2; colr[o + 5] = r.hue.b * f2;
+      o += 6;
+    }
+  }
+  g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true;
+}
+
+const hud = document.getElementById('hud');
+let paused = false;
+addEventListener('keydown', ev => {
+  const k = ev.key.toLowerCase();
+  if (k === 'e') event();
+  if (k === ' ') paused = !paused;
+  if (k === 'r') { Q.set('seed', Math.floor(Math.random() * 1e6)); location.search = Q.toString(); }
+  if (k === 's') { const a = document.createElement('a'); a.download = `snare-shell-${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+function loop() {
+  requestAnimationFrame(loop);
+  if (!paused) { sim(); build(); }
+  controls.update(); renderer.render(scene, camera);
+  if (frame % 15 === 0) hud.textContent = `044 · SNARE SHELL · ${form.n} · ${palName} · β ${(beta * 180 / Math.PI).toFixed(1)}° · e ${e.toFixed(2)} · seed ${seed} · ${lastEv}`;
+}
+loop();
+</script></body></html>

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Coarsening Foam</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;height:100%;background:#050507;overflow:hidden}
+#hud{position:fixed;left:10px;bottom:8px;font:10px monospace;color:#777;letter-spacing:.08em;pointer-events:none}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = +(q.get('seed') || Math.floor(Math.random() * 1e5));
+function mulberry32(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rnd = mulberry32(seed);
+
+// 大きい房 → 小さい房（消える直前ほど明るい）
+const PALS = [
+  { name: 'Ember',  c: ['#1d2b4f', '#3a8f93', '#f2c14e', '#ff6b5b'] },
+  { name: 'Sumi & Gold', c: ['#26252c', '#6f6552', '#d4ae5c', '#fff0c4'] },
+  { name: 'Neon',   c: ['#34107a', '#2fb6e8', '#b5ff4a', '#ff3cac'] },
+  { name: 'Moss',   c: ['#1f2d27', '#56785a', '#c4c98a', '#f6e7cf'] },
+];
+const pal = PALS[Math.floor(rnd() * PALS.length)];
+const stops = pal.c.map(h => new THREE.Color(h));
+function ramp(t, out) {
+  t = Math.min(0.999, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.floor(t), f = t - i;
+  return out.copy(stops[i]).lerp(stops[i + 1], f);
+}
+
+// 容器の形（seed で 球 / 卵 / 扁平）
+const N = 56, C = N / 2, R = 22;
+const ey = [1, 1.2, 0.78][Math.floor(rnd() * 3)];
+const N2 = N * N;
+const lab = new Int16Array(N * N2).fill(-1);
+const domI = [], domX = [], domY = [], domZ = [], surf = [];
+for (let z = 0; z < N; z++) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+  const dx = (x - C) / R, dy = (y - C) / (R * ey), dz = (z - C) / R;
+  const d = dx * dx + dy * dy + dz * dz;
+  if (d <= 1) { const i = x + y * N + z * N2; domI.push(i); domX.push(x); domY.push(y); domZ.push(z); if (d > 0.72) surf.push(domI.length - 1); lab[i] = 0; }
+}
+const ND = domI.length;
+const isDom = new Uint8Array(N * N2); for (const i of domI) isDom[i] = 1;
+
+// 房（パワー図の母点と重み）
+const CAP = 600, N0 = 64;
+const sx = new Float32Array(CAP), sy = new Float32Array(CAP), sz = new Float32Array(CAP), w = new Float32Array(CAP);
+const V = new Float32Array(CAP), cx = new Float32Array(CAP), cy = new Float32Array(CAP), cz = new Float32Array(CAP), rr = new Float32Array(CAP);
+let nb = 0, vanished = 0, lastEvent = '';
+function add(x, y, z, ww) { if (nb >= CAP) return; sx[nb] = x; sy[nb] = y; sz[nb] = z; w[nb] = ww; nb++; }
+function removeAt(j) { nb--; sx[j] = sx[nb]; sy[j] = sy[nb]; sz[j] = sz[nb]; w[j] = w[nb]; V[j] = V[nb]; rr[j] = rr[nb]; }
+for (let k = 0; k < 200; k++) { const p = Math.floor(rnd() * ND); add(domX[p] + rnd() - .5, domY[p] + rnd() - .5, domZ[p] + rnd() - .5, 0); }
+
+function assign() {
+  V.fill(0, 0, nb); cx.fill(0, 0, nb); cy.fill(0, 0, nb); cz.fill(0, 0, nb);
+  for (let k = 0; k < ND; k++) {
+    const x = domX[k], y = domY[k], z = domZ[k];
+    let best = 1e12, bi = 0;
+    for (let j = 0; j < nb; j++) {
+      const a = x - sx[j], b = y - sy[j], c = z - sz[j];
+      const d = a * a + b * b + c * c - w[j];
+      if (d < best) { best = d; bi = j; }
+    }
+    lab[domI[k]] = bi; V[bi]++; cx[bi] += x; cy[bi] += y; cz[bi] += z;
+  }
+  for (let j = 0; j < nb; j++) rr[j] = Math.cbrt(V[j] * 0.2387);
+}
+
+// 圧力の高い（小さい）房から低い房へ気体が抜ける＝大きい房が育ち小さい房が消える
+const G = 0.5;
+let cool = 0;
+function evolve() {
+  let rm = 0, n = 0;
+  for (let j = 0; j < nb; j++) if (V[j] > 0) { rm += rr[j]; n++; }
+  rm /= Math.max(1, n);
+  for (let j = nb - 1; j >= 0; j--) {
+    if (V[j] === 0) { removeAt(j); vanished++; continue; }
+    w[j] += G * rm * rm * (1 / rm - 1 / Math.max(0.6, rr[j]));
+    sx[j] += 0.2 * (cx[j] / V[j] - sx[j]); sy[j] += 0.2 * (cy[j] / V[j] - sy[j]); sz[j] += 0.2 * (cz[j] / V[j] - sz[j]);
+  }
+  let wm = 0; for (let j = 0; j < nb; j++) wm += w[j]; wm /= Math.max(1, nb);
+  for (let j = 0; j < nb; j++) w[j] -= wm;
+  if (--cool < 0) for (let j = 0; j < nb; j++) if (rr[j] > 2.1 * rm) { rupture(j); cool = 20; break; }
+  let budget = 8;
+  while (nb < N0 && budget-- > 0) spawnSurface();
+}
+function powerAt(j, x, y, z) { const a = x - sx[j], b = y - sy[j], c = z - sz[j]; return a * a + b * b + c * c - w[j]; }
+function spawnSurface() {
+  const p = surf[Math.floor(rnd() * surf.length)];
+  const x = domX[p], y = domY[p], z = domZ[p], o = lab[domI[p]];
+  if (o < 0 || o >= nb) return;
+  add(x, y, z, -powerAt(o, x, y, z) + 5 + rnd() * 6);
+}
+
+// 事件: 最大の房の破裂（細かい泡に砕ける）/ 膜の破断（隣と一つになる）
+function rupture(j = -1) {
+  if (j < 0) { j = 0; for (let k = 1; k < nb; k++) if (V[k] > V[j]) j = k; }
+  const pts = []; for (let k = 0; k < ND; k++) if (lab[domI[k]] === j) pts.push(k);
+  const ox = sx[j], oy = sy[j], oz = sz[j], ow = w[j];
+  removeAt(j);
+  const m = 10 + Math.floor(rnd() * 14);
+  for (let i = 0; i < m && pts.length; i++) {
+    const p = pts[Math.floor(rnd() * pts.length)], x = domX[p], y = domY[p], z = domZ[p];
+    add(x, y, z, ow - ((x - ox) ** 2 + (y - oy) ** 2 + (z - oz) ** 2) + rnd() * 4);
+  }
+  lastEvent = 'rupture';
+}
+function breakFilm() {
+  const j = Math.floor(rnd() * nb);
+  let k = -1, bd = 1e9;
+  for (let i = 0; i < nb; i++) if (i !== j) { const d = (sx[i] - sx[j]) ** 2 + (sy[i] - sy[j]) ** 2 + (sz[i] - sz[j]) ** 2; if (d < bd) { bd = d; k = i; } }
+  if (k < 0) return;
+  const big = V[j] >= V[k] ? j : k, small = big === j ? k : j;
+  w[big] += rr[small] * rr[small] * 1.5;
+  removeAt(small);
+  lastEvent = 'film break';
+}
+function fireEvent() { rnd() < 0.55 ? rupture() : (breakFilm(), breakFilm(), breakFilm()); }
+
+// three.js
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.5;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050507);
+scene.fog = new THREE.FogExp2(0x050507, 0.0085);
+const BASE_FOV = 38;
+const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 1, 600);
+camera.position.set(52, 30, 70);
+function fitFov() {
+  const a = innerWidth / innerHeight;
+  camera.aspect = a;
+  camera.fov = a < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(BASE_FOV) / 2) / a)) : BASE_FOV;
+  camera.updateProjectionMatrix();
+}
+fitFov();
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.55;
+scene.add(new THREE.HemisphereLight(0x9aa6c0, 0x151018, 0.55));
+const key = new THREE.DirectionalLight(0xfff1dc, 2.2); key.position.set(-40, 60, 30); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.9); rim.position.set(50, -20, -60); scene.add(rim);
+
+const MAXI = 60000;
+const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+  new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0.38 }), MAXI);
+mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXI * 3), 3);
+mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+mesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+scene.add(mesh);
+const M = mesh.instanceMatrix.array, CL = mesh.instanceColor.array;
+for (let i = 0; i < MAXI; i++) M[i * 16 + 15] = 1;
+
+// 稜＝3つ以上の房（または外気）が出会う所だけを描く。膜は描かない
+const col = new THREE.Color(), nbrs = new Int16Array(7), OFF = [1, -1, N, -N, N2, -N2];
+function buildRidges() {
+  let rm = 0, n = 0; for (let j = 0; j < nb; j++) if (V[j] > 0) { rm += rr[j]; n++; } rm /= Math.max(1, n);
+  let c = 0;
+  for (let k = 0; k < ND && c < MAXI; k++) {
+    const i = domI[k]; let cnt = 1; nbrs[0] = lab[i];
+    let outside = false;
+    for (const o of OFF) {
+      if (!isDom[i + o]) { outside = true; continue; }
+      const L = lab[i + o];
+      let seen = false; for (let t = 0; t < cnt; t++) if (nbrs[t] === L) { seen = true; break; }
+      if (!seen) nbrs[cnt++] = L;
+    }
+    if (cnt < 3) continue;
+    let rmin = 1e9, pmin = 1e9, pmax = 0;
+    for (let t = 0; t < cnt; t++) { const L = nbrs[t]; if (L < 0) continue; const r = Math.max(0.5, rr[L]); if (r < rmin) rmin = r; const p = 1 / r; if (p < pmin) pmin = p; if (p > pmax) pmax = p; }
+    const dp = Math.min(1.6, (pmax - pmin) * rm);
+    const vert = cnt >= 4;
+    const s = vert ? 0.98 : 0.4 + 0.3 * dp;
+    const o = c * 16;
+    M[o] = s; M[o + 5] = s; M[o + 10] = s;
+    M[o + 12] = domX[k] - C; M[o + 13] = domY[k] - C; M[o + 14] = domZ[k] - C;
+    ramp(1 - rmin / (2.2 * rm), col);
+    const b = (vert ? 1.25 : 1) * (outside ? 0.7 : 1);
+    CL[c * 3] = col.r * b; CL[c * 3 + 1] = col.g * b; CL[c * 3 + 2] = col.b * b;
+    c++;
+  }
+  mesh.count = c;
+  mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+}
+
+// 開いた瞬間から粗大化が進んだ状態にしておく
+for (let t = 0; t < 110; t++) { assign(); evolve(); }
+assign(); buildRidges();
+
+let paused = false, frame = 0, nextEvent = 400 + rnd() * 500;
+const hud = document.getElementById('hud');
+function loop() {
+  requestAnimationFrame(loop);
+  if (!paused) {
+    frame++;
+    if (frame % 3 === 0) {
+      assign(); buildRidges(); evolve();
+      if (frame > nextEvent) { fireEvent(); nextEvent = frame + 500 + rnd() * 500; }
+    }
+    mesh.rotation.y += 0.0006;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  if (frame % 15 === 0) hud.textContent = `023 · COARSENING FOAM · ${pal.name} · seed ${seed} · cells ${nb} · vanished ${vanished}${lastEvent ? ' · ' + lastEvent : ''}`;
+}
+loop();
+
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitFov(); });
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') { q.set('seed', Math.floor(Math.random() * 1e5)); location.search = q.toString(); }
+  else if (k === 's') { const a = document.createElement('a'); a.download = `023_coarsening-foam_${seed}.png`; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
+  else if (k === 'e') fireEvent();
+  else if (k === ' ') { paused = !paused; e.preventDefault(); }
+});
+</script></body></html>

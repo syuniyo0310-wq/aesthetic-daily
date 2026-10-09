@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Crest Iris</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;height:100%;background:#030305;overflow:hidden}
+#hud{position:fixed;left:10px;bottom:8px;font:10px monospace;color:#8a8a9a99;letter-spacing:.08em;pointer-events:none}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const qs = new URLSearchParams(location.search);
+const seed = parseInt(qs.get('seed')) || (1 + Math.floor(Math.random() * 9999));
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rnd = mulberry(seed * 104729 + 7);
+const pick = (arr, w) => { if (!w) return arr[Math.floor(rnd() * arr.length)]; let s = w.reduce((a, b) => a + b), r = rnd() * s; for (let i = 0; i < arr.length; i++) { r -= w[i]; if (r <= 0) return arr[i]; } return arr[arr.length - 1]; };
+
+const PALETTES = {
+  'INDIGO-VERMILION': ['#ff5a36', '#ffc27a', '#3a5cff'],
+  'AURORA': ['#3dffb5', '#2ab3ff', '#c25bff'],
+  'SUMI-GOLD': ['#ffd27a', '#c98a2e', '#6d7f99'],
+  'MAGENTA-LIME': ['#ff3db8', '#b8ff3d', '#36e0ff'],
+  'PEARL': ['#ffe9f2', '#9fc9ff', '#ffb38a'],
+};
+const palName = pick(Object.keys(PALETTES));
+const pal = PALETTES[palName].map(c => new THREE.Color(c));
+const form = pick(['FLAT', 'FUNNEL', 'DOME'], [3, 3, 2]);
+const tiersN = pick([1, 2], [7, 3]);
+const regime = pick(['CALM', 'RESTLESS', 'TURBULENT'], [3, 4, 2]);
+const ALPHA = { CALM: [0.2, 0.04], RESTLESS: [0.14, 0.07], TURBULENT: [0.07, 0.05] }[regime];
+
+const N = 128, H = N / 2, DT = 0.05, CUT = Math.floor(N / 3);
+const COS = new Float32Array(N), SIN = new Float32Array(N);
+for (let j = 0; j < N; j++) { COS[j] = Math.cos(2 * Math.PI * j / N); SIN[j] = Math.sin(2 * Math.PI * j / N); }
+function makeFront(cells, phase) {
+  const f = { cells, re: new Float32Array(H + 1), im: new Float32Array(H + 1), u: new Float32Array(N), w: new Float32Array(N), amp: 1, phase, k: new Float32Array(H + 1) };
+  setCells(f, cells);
+  for (let m = 1; m < 12; m++) { f.re[m] = (rnd() - 0.5) * 0.4; f.im[m] = (rnd() - 0.5) * 0.4; }
+  return f;
+}
+function setCells(f, c) { f.cells = c; const Lx = c * 2 * Math.PI * Math.SQRT2; for (let m = 0; m <= H; m++) f.k[m] = 2 * Math.PI * m / Lx; }
+function inverse(f) {
+  for (let j = 0; j < N; j++) {
+    let s = f.re[0];
+    for (let m = 1; m < CUT; m++) { const idx = (j * m) % N; s += 2 * (f.re[m] * COS[idx] - f.im[m] * SIN[idx]); }
+    f.u[j] = s / N;
+  }
+}
+function stepFront(f, alpha) {
+  inverse(f);
+  for (let j = 0; j < N; j++) f.w[j] = f.u[j] * f.u[j];
+  for (let m = 1; m < CUT; m++) {
+    let wr = 0, wi = 0;
+    for (let j = 0; j < N; j++) { const idx = (j * m) % N; wr += f.w[j] * COS[idx]; wi -= f.w[j] * SIN[idx]; }
+    const k = f.k[m], lam = k * k - k * k * k * k - alpha, E = Math.exp(lam * DT), F = Math.abs(lam) < 1e-6 ? DT : (E - 1) / lam;
+    const nr = 0.5 * k * wi, ni = -0.5 * k * wr;
+    f.re[m] = E * f.re[m] + F * nr; f.im[m] = E * f.im[m] + F * ni;
+  }
+  f.re[0] = 0;
+}
+
+const fronts = [makeFront(pick([5, 6, 7, 9, 11, 14], [2, 3, 3, 3, 2, 1]), 0)];
+if (tiersN === 2) fronts.push(makeFront(pick([4, 6, 8, 10]), 1));
+const K = 240, R0 = 1.6, DR = 0.056;
+const hist = fronts.map(() => Array.from({ length: K }, () => new Float32Array(N)));
+let head = 0, simT = 0;
+const alphaAt = (f) => Math.min(0.245, Math.max(0.01, ALPHA[0] + ALPHA[1] * Math.sin(simT * 0.021 + f.phase * 2.1) + f.kick));
+fronts.forEach(f => f.kick = 0);
+function advance(steps) {
+  for (let s = 0; s < steps; s++) { simT += DT; for (const f of fronts) { stepFront(f, alphaAt(f)); f.kick *= 0.996; } }
+  head = (head + K - 1) % K;
+  fronts.forEach((f, fi) => {
+    inverse(f); let mx = 0;
+    for (let j = 0; j < N; j++) mx = Math.max(mx, Math.abs(f.u[j]));
+    f.amp += (Math.max(mx, 0.05) - f.amp) * 0.08;
+    hist[fi][head].set(f.u);
+  });
+}
+let lastEvent = '';
+function event(kind) {
+  if (!kind) kind = pick(['KINK', 'HUSH', 'RESIZE', 'STORM'], [4, 2, 3, 2]);
+  const f = fronts[Math.floor(rnd() * fronts.length)];
+  if (kind === 'KINK') { inverse(f); const c = Math.floor(rnd() * N), A = f.amp * 2.2; for (let m = 1; m < CUT; m++) { const idx = (c * m) % N, g = Math.exp(-m * m / 90) * A / N * 6; f.re[m] += g * COS[idx]; f.im[m] -= g * SIN[idx]; } }
+  if (kind === 'HUSH') { for (let m = 0; m <= H; m++) { f.re[m] *= 0.01; f.im[m] *= 0.01; } setCells(f, Math.max(4, f.cells + pick([-3, -2, 2, 3]))); }
+  if (kind === 'RESIZE') setCells(f, Math.min(16, Math.max(4, f.cells + pick([-2, -1, 1, 2]))));
+  if (kind === 'STORM') f.kick = -0.12;
+  lastEvent = kind;
+}
+for (let i = 0; i < 160; i++) advance(30);
+for (let i = 0; i < K; i++) advance(6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#030305');
+scene.fog = new THREE.FogExp2('#030305', 0.028);
+const BASE_FOV = 40;
+const camera = new THREE.PerspectiveCamera(BASE_FOV, 1, 0.1, 200);
+camera.position.set(0, 25, 30);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.target.set(0, tiersN === 2 ? -1.5 : 0, 0);
+controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+
+const SEG = N * K;
+const lineGeo = new THREE.BufferGeometry();
+const LP = new Float32Array(SEG * 2 * 3 * fronts.length), LC = new Float32Array(SEG * 2 * 3 * fronts.length);
+lineGeo.setAttribute('position', new THREE.BufferAttribute(LP, 3));
+lineGeo.setAttribute('color', new THREE.BufferAttribute(LC, 3));
+const lines = new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+lines.frustumCulled = false; scene.add(lines);
+const MAXP = K * 24 * fronts.length;
+const ptGeo = new THREE.BufferGeometry();
+const PP = new Float32Array(MAXP * 3), PC = new Float32Array(MAXP * 3), PS = new Float32Array(MAXP);
+ptGeo.setAttribute('position', new THREE.BufferAttribute(PP, 3));
+ptGeo.setAttribute('color', new THREE.BufferAttribute(PC, 3));
+ptGeo.setAttribute('size', new THREE.BufferAttribute(PS, 1));
+const ptMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, uniforms: { px: { value: 1 } },
+  vertexShader: `attribute float size; attribute vec3 color; varying vec3 vC; uniform float px;
+    void main(){ vC = color; vec4 mv = modelViewMatrix * vec4(position,1.); gl_PointSize = size * px * 260. / -mv.z; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec3 vC; void main(){ float d = length(gl_PointCoord - .5); float a = smoothstep(.5, .08, d); gl_FragColor = vec4(vC * a, a); }`
+});
+const points = new THREE.Points(ptGeo, ptMat); points.frustumCulled = false; scene.add(points);
+
+const tmp = new THREE.Color(), tmp2 = new THREE.Color();
+function lift(fi, a) {
+  const x = a / K;
+  const base = fi === 0 ? 0 : -3.2;
+  if (form === 'FUNNEL') return base + x * x * 3.6 - 1;
+  if (form === 'DOME') return base + 1.8 - x * x * 4;
+  return base;
+}
+function build(frac) {
+  let l = 0, p = 0;
+  fronts.forEach((f, fi) => {
+    const hs = hist[fi], A = f.amp, rot = fi * 0.5;
+    for (let a = 0; a < K; a++) {
+      const u = hs[(head + a) % K], r = (R0 + (a + frac) * DR) * (fi === 0 ? 1 : 0.8), y0 = lift(fi, a + frac);
+      const fade = Math.pow(1 - a / K, 1.3) * Math.min(1, (a + frac) / 4 + 0.2), hz = 0.55 + a / K * 0.9;
+      tmp2.copy(pal[fi === 0 ? 0 : 2]).lerp(pal[1], a / K);
+      for (let j = 0; j < N; j++) {
+        const j2 = (j + 1) % N;
+        for (let e = 0; e < 2; e++) {
+          const jj = e ? j2 : j, v = u[jj] / A, th = (jj + (e && j2 === 0 ? N : 0)) / N * Math.PI * 2 + rot;
+          const o = l * 3; LP[o] = Math.cos(th) * r; LP[o + 1] = y0 + v * hz; LP[o + 2] = Math.sin(th) * r;
+          const c = Math.pow(Math.min(1, Math.max(0, v * 0.75 + 0.15)), 2.6) * fade * 0.8;
+          LC[o] = tmp2.r * c; LC[o + 1] = tmp2.g * c; LC[o + 2] = tmp2.b * c; l++;
+        }
+        if (p < MAXP && u[j] > 0.35 * A && u[j] >= u[(j + N - 1) % N] && u[j] > u[j2] && a % 2 === 0) {
+          const th = j / N * Math.PI * 2 + rot, v = u[j] / A, o = p * 3;
+          PP[o] = Math.cos(th) * r; PP[o + 1] = y0 + v * hz + 0.03; PP[o + 2] = Math.sin(th) * r;
+          tmp.copy(pal[2]).lerp(pal[0], Math.min(1, v)).multiplyScalar(fade * 0.7);
+          PC[o] = tmp.r; PC[o + 1] = tmp.g; PC[o + 2] = tmp.b; PS[p] = 0.08 + 0.26 * v * v * (1 - a / K * 0.5); p++;
+        }
+      }
+    }
+  });
+  lineGeo.setDrawRange(0, l); ptGeo.setDrawRange(0, p);
+  lineGeo.attributes.position.needsUpdate = lineGeo.attributes.color.needsUpdate = true;
+  ptGeo.attributes.position.needsUpdate = ptGeo.attributes.color.needsUpdate = ptGeo.attributes.size.needsUpdate = true;
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight, asp = w / h;
+  camera.aspect = asp;
+  camera.fov = asp < 1 ? 2 * Math.atan(Math.tan(BASE_FOV * Math.PI / 360) / asp) * 180 / Math.PI : BASE_FOV;
+  camera.updateProjectionMatrix(); renderer.setSize(w, h);
+  ptMat.uniforms.px.value = renderer.getPixelRatio() * h / 800;
+}
+addEventListener('resize', resize); resize();
+
+let paused = false, acc = 0, nextEvent = 3, t = 0, last = performance.now();
+const RING_DT = 1 / 24;
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'r') location.search = '?seed=' + (1 + Math.floor(Math.random() * 99999));
+  if (k === 's') { const a = document.createElement('a'); a.download = `crest-iris_${seed}.png`; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
+  if (k === 'e') { event(); nextEvent = t + 5 + rnd() * 3; }
+  if (k === ' ') { paused = !paused; e.preventDefault(); }
+});
+const hud = document.getElementById('hud');
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    t += dt; acc += dt;
+    let n = 0; while (acc > RING_DT && n < 3) { acc -= RING_DT; advance(6); n++; }
+    if (acc > RING_DT) acc = 0;
+    if (t > nextEvent) { event(); nextEvent = t + 4.5 + rnd() * 4; }
+  }
+  build(paused ? 0 : acc / RING_DT);
+  controls.update();
+  hud.textContent = `040 · CREST IRIS · ${regime} · ${form} · cells ${fronts.map(f => f.cells).join('/')} · α ${alphaAt(fronts[0]).toFixed(3)} · ${palName} · seed ${seed}${lastEvent ? ' · ' + lastEvent : ''}`;
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script></body></html>

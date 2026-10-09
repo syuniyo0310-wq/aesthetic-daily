@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Discord Truss</title>
+<style>html,body{margin:0;height:100%;background:#05060a;overflow:hidden}
+#hud{position:fixed;left:10px;bottom:8px;font:10px monospace;color:#6a6f78;letter-spacing:.05em}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+const P = new URLSearchParams(location.search);
+let SEED = parseInt(P.get('seed') || '7', 10);
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+scene.fog = new THREE.FogExp2(0x05060a, 0.032);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.7; controls.target.set(0, 0, 0);
+scene.add(new THREE.HemisphereLight(0xbfc8ff, 0x201810, 0.9));
+const dl = new THREE.DirectionalLight(0xffffff, 1.3); dl.position.set(4, 8, 6); scene.add(dl);
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.35, 0.5, 0.92);
+composer.addPass(bloom);
+const BASE_FOV = 42;
+function fitFov(){
+  const w = innerWidth, h = innerHeight, a = w / h; camera.aspect = a;
+  camera.fov = a < 1 ? 2 * Math.atan(Math.tan(BASE_FOV * Math.PI / 360) / a) * 180 / Math.PI : BASE_FOV;
+  camera.updateProjectionMatrix(); renderer.setSize(w, h); composer.setSize(w, h); bloom.setSize(w, h);
+}
+addEventListener('resize', fitFov);
+
+const PALS = [
+  ['SUMI-GOLD', [0x3a2a1a, 0xc89a48, 0xf4e2b0, 0x8a3a24]],
+  ['NEON', [0xff3caa, 0x2ae6ff, 0xaaff3c, 0xffbe28]],
+  ['UKIYO', [0x2c5f96, 0xd64834, 0xe8c460, 0x50a088]],
+  ['GLACIER', [0x1e3c78, 0x6ab4e6, 0xe6f4ff, 0x9a7ad6]],
+  ['CORAL', [0x7a1e3a, 0xff6e5a, 0xffbe78, 0x78c8be]],
+];
+const FORMS = ['SPINDLE', 'HOURGLASS', 'COLUMN', 'CROWN'];
+const MAXE = 900;
+const geo = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true); geo.translate(0, 0.5, 0); geo.rotateX(Math.PI / 2);
+const mat = new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.35, vertexColors: false });
+const mesh = new THREE.InstancedMesh(geo, mat, MAXE); mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAXE * 3), 3);
+scene.add(mesh);
+const nodeGeo = new THREE.BufferGeometry();
+const NMAX = 260;
+const nodePos = new Float32Array(NMAX * 3); nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3));
+const nodes = new THREE.Points(nodeGeo, new THREE.PointsMaterial({ size: 0.05, color: 0x9aa0b0, transparent: true, opacity: 0.5 }));
+scene.add(nodes);
+
+let psi = 0, base, rnd, N, K, Kt, omega, theta, rad, pos, edges, adj, pal, form, cols, evName, nextEv, t = 0, paused = false, sync = 0, rewireRate;
+function key(i, j){ return i < j ? i * 1000 + j : j * 1000 + i; }
+function init(){
+  rnd = mulberry(SEED * 7919 + 3);
+  pal = PALS[rnd() * PALS.length | 0]; cols = pal[1].map(c => new THREE.Color(c));
+  form = FORMS[rnd() * FORMS.length | 0];
+  N = 140 + (rnd() * 110 | 0);
+  const deg = 4 + (rnd() * 4 | 0);
+  K = Kt = 0.35 + rnd() * 0.9; rewireRate = 2 + (rnd() * 6 | 0);
+  base = new Float32Array(N); omega = new Float32Array(N); theta = new Float32Array(N); rad = new Float32Array(N); pos = new Float32Array(N * 3);
+  const bim = rnd() < 0.4;
+  for (let i = 0; i < N; i++) {
+    let g = 0; for (let k = 0; k < 4; k++) g += rnd(); g = (g - 2) * 1.2;
+    if (bim) g = (g * 0.5) + (rnd() < 0.5 ? -1 : 1);
+    omega[i] = g; theta[i] = rnd() * 6.283; base[i] = i * 2.39996;
+    const u = Math.min(1, Math.abs(g) / 2.2);
+    rad[i] = form === 'SPINDLE' ? 2.6 * (1.05 - u) + 0.3 : form === 'HOURGLASS' ? 0.5 + 2.4 * u : form === 'CROWN' ? 0.8 + 2.2 * (g > 0 ? u : 0.15) : 1.9;
+    rad[i] *= 0.8 + 0.4 * rnd();
+  }
+  edges = []; adj = new Map();
+  while (edges.length < N * deg / 2) { const i = rnd() * N | 0, j = rnd() * N | 0; if (i !== j && !adj.has(key(i, j))) addEdge(i, j, 1); }
+  evName = 'genesis'; t = 0; nextEv = 3.5;
+  for (let k = 0; k < 900; k++) step(0.03, true);
+  for (const e of edges) e.g = 1;
+}
+function addEdge(i, j, g){ const e = { i, j, g: g ?? 0, d: 0, age: 0 }; edges.push(e); adj.set(key(i, j), e); }
+const nbr = () => { const L = Array.from({ length: N }, () => []); for (const e of edges) if (!e.d) { L[e.i].push(e); L[e.j].push(e); } return L; };
+function rewire(L){
+  const i = rnd() * N | 0; if (L[i].length < 2) return;
+  let best = null, bc = -2;
+  for (const e of L[i]) { if (e.d) continue; const j = e.i === i ? e.j : e.i, c = Math.cos(theta[j] - theta[i]); if (c > bc) { bc = c; best = e; } }
+  if (bc < 0.6) return;
+  for (let tries = 0; tries < 20; tries++) {
+    const m = rnd() * N | 0;
+    if (m !== i && !adj.has(key(i, m))) { best.d = 1; adj.delete(key(best.i, best.j)); addEdge(i, m); return; }
+  }
+}
+function step(dt, fast){
+  const dth = new Float32Array(N), dg = new Uint16Array(N);
+  for (const e of edges) { if (e.d) continue; const s = Math.sin(theta[e.j] - theta[e.i]); dth[e.i] += s; dth[e.j] -= s; dg[e.i]++; dg[e.j]++; }
+  let cx = 0, cy = 0;
+  for (let i = 0; i < N; i++) { theta[i] += (omega[i] + K * dth[i] / Math.max(1, dg[i])) * dt; cx += Math.cos(theta[i]); cy += Math.sin(theta[i]); }
+  sync = Math.hypot(cx, cy) / N; psi = Math.atan2(cy, cx);
+  K += (Kt - K) * dt * 0.8;
+  const r = fast ? 1 : rewireRate;
+  const L = nbr(); for (let k = 0; k < r; k++) rewire(L);
+  for (let k = edges.length - 1; k >= 0; k--) {
+    const e = edges[k]; e.age += dt;
+    if (e.d) { e.g -= dt * 4; if (e.g <= 0) edges.splice(k, 1); } else e.g = Math.min(1, e.g + dt * 1.6);
+  }
+}
+function event(kind){
+  const r = kind ?? (rnd() * 4 | 0);
+  if (r === 0) { Kt = 2.5 + rnd() * 1.5; setTimeout(() => Kt = 0.35 + rnd() * 0.9, 2600); evName = 'lock-in'; }
+  else if (r === 1) { const c = (rnd() - 0.5) * 2, w = 0.5; for (let i = 0; i < N; i++) if (Math.abs(omega[i] - c) < w) theta[i] = 0; evName = 'chorus'; }
+  else if (r === 2) { for (let i = 0; i < N; i++) omega[i] = -omega[i]; evName = 'inversion'; }
+  else { rewireRate = 25; setTimeout(() => rewireRate = 2 + (rnd() * 6 | 0), 2200); evName = 'rewiring storm'; }
+  nextEv = t + 5 + rnd() * 4;
+}
+const m4 = new THREE.Matrix4(), a = new THREE.Vector3(), b = new THREE.Vector3(), q = new THREE.Quaternion(), z = new THREE.Vector3(0, 0, 1), sc = new THREE.Vector3(), col = new THREE.Color();
+function palAt(u){ const x = Math.min(0.999, Math.max(0, u)) * 3, i = x | 0; return col.copy(cols[i]).lerp(cols[i + 1], x - i); }
+function draw(){
+  for (let i = 0; i < N; i++) {
+    const az = base[i] + 0.9 * Math.sin(theta[i] - psi) + 0.25 * (theta[i] - psi);
+    pos[i*3] = Math.cos(az) * rad[i]; pos[i*3+1] = omega[i] * 1.6; pos[i*3+2] = Math.sin(az) * rad[i];
+    nodePos.set([pos[i*3], pos[i*3+1], pos[i*3+2]], i * 3);
+  }
+  nodeGeo.setDrawRange(0, N); nodeGeo.attributes.position.needsUpdate = true;
+  let n = 0;
+  for (const e of edges) {
+    if (n >= MAXE) break;
+    a.fromArray(pos, e.i * 3); b.fromArray(pos, e.j * 3);
+    const dir = b.clone().sub(a), len = dir.length(); if (len < 1e-4) continue;
+    const span = Math.abs(omega[e.i] - omega[e.j]);
+    const th = (0.004 + 0.016 * Math.min(1, e.age / 30) + 0.01 * Math.min(1, span / 2)) * Math.max(0.05, e.g);
+    q.setFromUnitVectors(z, dir.multiplyScalar(1 / len)); sc.set(th, th, len * (e.d ? 1 : Math.min(1, e.g * 1.2)));
+    m4.compose(a, q, sc); mesh.setMatrixAt(n, m4);
+    const anti = 0.5 - 0.5 * Math.cos(theta[e.j] - theta[e.i]);
+    palAt((omega[e.i] + omega[e.j]) / 5 + 0.5).multiplyScalar(0.55 + 1.1 * anti * (e.d ? 0.4 : 1));
+    mesh.setColorAt(n, col); n++;
+  }
+  mesh.count = n; mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+  document.getElementById('hud').textContent = `042 · DISCORD TRUSS · ${form} · ${pal[0]} · N ${N} · K ${K.toFixed(2)} · sync ${sync.toFixed(2)} · seed ${SEED} · ${evName}`;
+}
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'e') event();
+  else if (k === ' ') { paused = !paused; e.preventDefault(); }
+  else if (k === 'r') { SEED++; history.replaceState(null, '', '?seed=' + SEED); init(); }
+  else if (k === 's') { composer.render(); const l = document.createElement('a'); l.download = `042_seed${SEED}.png`; l.href = renderer.domElement.toDataURL(); l.click(); }
+});
+camera.position.set(0, 1.2, 11);
+fitFov(); init();
+const clock = new THREE.Clock();
+function loop(){
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.05, clock.getDelta());
+  if (!paused) {
+    t += dt; step(dt);
+    if (t > nextEv) event();
+  }
+  draw(); controls.update(); composer.render();
+}
+loop();
+</script></body></html>

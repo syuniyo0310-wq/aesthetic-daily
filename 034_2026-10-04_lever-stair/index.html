@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Lever Stair</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALS = [
+  { name: 'Brass', bg: '#0c0b09', wood: '#8a7050', ful: '#2c261e', c: ['#f2d48a', '#e07a3d', '#f6efe2', '#c45c4a'] },
+  { name: 'Lacquer', bg: '#10080a', wood: '#4a2c2c', ful: '#1a1010', c: ['#ff5a4a', '#f2c9a0', '#e8e2dc', '#c9843a'] },
+  { name: 'Chalk', bg: '#0a1016', wood: '#9aa8b5', ful: '#24303a', c: ['#8fd3ff', '#f2f6f8', '#f0c36a', '#6ec8b0'] },
+];
+const pal = pick(PALS);
+const N = pick([5, 7, 9]);
+const HALF = pick([3.2, 4.3, 5.5]);
+const TIP = pick([2, 3, 4]);
+const GAP = pick([0.92, 1.08, 1.28]);
+const MAXA = 0.58;
+const DY = (HALF * Math.sin(MAXA) + 0.85) * GAP;
+const stops = pal.c.map((h) => new THREE.Color(h));
+const col = new THREE.Color();
+const ramp = (t) => { t = Math.min(0.999, Math.max(0, t)) * (stops.length - 1); const i = Math.floor(t); return col.copy(stops[i]).lerp(stops[i + 1], t - i); };
+const wood = new THREE.Color(pal.wood), fulC = new THREE.Color(pal.ful), slabC = new THREE.Color();
+
+const planks = [];
+for (let i = 0; i < N; i++) {
+  planks.push({
+    x: 0,
+    y: (N - 1) * DY * 0.5 - i * DY,
+    z: (i - (N - 1) / 2) * 0.62,
+    rest: i % 2 === 0 ? -0.1 : 0.1,
+    ang: i % 2 === 0 ? -0.28 : 0.12,
+    av: 0,
+    dumped: false,
+  });
+}
+const balls = [];
+function addBall(p, u, v) {
+  balls.push({ mode: 'ride', p, u, v, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, t: 0, to: 0, landU: 0, id: balls.length });
+}
+for (let i = 0; i < TIP + 1; i++) addBall(0, 0.22 + i * 0.16, 0.55);
+if (N > 3) addBall(2, -0.25, -0.2);
+addBall(1, 0.45, -0.15);
+const slabs = [];
+let tips = 0, simT = 0;
+
+function onPlank(p, u) {
+  const c = Math.cos(p.ang), sn = Math.sin(p.ang);
+  return { x: p.x + c * u * HALF, y: p.y + sn * u * HALF, z: p.z };
+}
+function dropSlab(i) {
+  const side = tips % 2 === 0 ? 1 : -1;
+  slabs.push({ x: side * (HALF + 2.7), z: (i - N / 2) * 0.28, ang: side * 0.12, life: 0, hue: i / N });
+  if (slabs.length > 28) slabs.shift();
+  tips++;
+}
+function step(dt) {
+  simT += dt;
+  for (const p of planks) {
+    let torque = -6.2 * (p.ang - p.rest) - 2.6 * p.av;
+    for (const b of balls) if (b.mode === 'ride' && planks[b.p] === p) torque += -b.u * 1.8;
+    p.av = Math.max(-1.6, Math.min(1.6, p.av + torque * dt));
+    p.ang = Math.max(-MAXA, Math.min(MAXA, p.ang + p.av * dt));
+  }
+  for (const b of balls) {
+    if (b.mode === 'ride') {
+      const p = planks[b.p];
+      const acc = -Math.sin(p.ang) * 11 - b.v * 0.35;
+      b.v = Math.max(-4.2, Math.min(4.2, b.v + acc * dt));
+      b.u += b.v * dt;
+      const w = onPlank(p, b.u);
+      b.x = w.x; b.y = w.y; b.z = w.z + ((b.id % 3) - 1) * 0.16;
+      if (Math.abs(b.u) > 1.06) {
+        const dir = Math.sign(b.u);
+        const low = -Math.sign(p.ang || dir);
+        if (dir === low && Math.abs(p.ang) > 0.25) {
+          if (!p.dumped) { p.dumped = true; dropSlab(b.p); }
+          if (b.p === N - 1) {
+            b.mode = 'sink'; b.t = 0; b.vx = dir * 0.8; b.vy = -0.4; b.vz = 0;
+          } else {
+            const next = b.p + 1;
+            b.mode = 'fly'; b.to = next; b.landU = dir * 0.72; b.t = 0;
+            b.vx = (planks[next].x - b.x) * 1.4;
+            b.vy = Math.min(-0.6, planks[next].y - b.y);
+            b.vz = (planks[next].z - b.z) * 2;
+          }
+        } else {
+          b.u = dir * 0.98; b.v *= -0.25;
+        }
+      }
+    } else if (b.mode === 'fly') {
+      b.t += dt; b.vy -= 7 * dt;
+      b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+      if (b.t > 0.34) {
+        b.mode = 'ride'; b.p = b.to; b.u = b.landU; b.v = -Math.sign(b.landU) * 1.1;
+        planks[b.p].dumped = false;
+      }
+    } else {
+      b.t += dt; b.vy -= 10 * dt; b.y += b.vy * dt; b.x += b.vx * dt;
+      if (b.t > 0.65) { b.mode = 'ride'; b.p = 0; b.u = 0.05; b.v = 0.4; planks[0].dumped = false; }
+    }
+  }
+  for (const sl of slabs) sl.life += dt;
+}
+function loadTop() {
+  for (let i = 0; i < TIP; i++) if (balls.length < 16) addBall(0, -0.15 + i * 0.18, 0.2);
+  planks[0].ang = planks[0].rest * 2.2; planks[0].dumped = false;
+}
+for (let n = 0; n < 150; n++) step(1 / 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.012);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 300);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+const H = (N - 1) * DY * 0.5;
+camera.position.set(HALF * 0.35, 0.6, Math.max(18, H * 2.5 + HALF));
+controls.target.set(0, 0, 0);
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(8, 14, 10); scene.add(dir);
+
+const MAXB = 16, MAXS = 42;
+const planksM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.08 }), N);
+const fulsM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.8, metalness: 0.05 }), N);
+const ballsM = new THREE.InstancedMesh(new THREE.SphereGeometry(0.28, 16, 12), new THREE.MeshStandardMaterial({ roughness: 0.28, metalness: 0.35, emissive: 0x22180c, emissiveIntensity: 0.45 }), MAXB);
+const slabsM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.75, metalness: 0.04 }), MAXS);
+for (const m of [planksM, fulsM, ballsM, slabsM]) { m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.count * 3), 3); m.frustumCulled = false; scene.add(m); }
+const dummy = new THREE.Object3D();
+
+function draw() {
+  planks.forEach((p, i) => {
+    dummy.position.set(p.x, p.y, p.z); dummy.rotation.set(0, 0, p.ang); dummy.scale.set(HALF * 2, 0.16, 0.62); dummy.updateMatrix();
+    planksM.setMatrixAt(i, dummy.matrix); planksM.setColorAt(i, wood);
+    dummy.position.set(p.x, p.y - 0.42, p.z); dummy.rotation.set(0, 0, 0); dummy.scale.set(0.28, 0.55, 0.36); dummy.updateMatrix();
+    fulsM.setMatrixAt(i, dummy.matrix); fulsM.setColorAt(i, fulC);
+  });
+  planksM.instanceMatrix.needsUpdate = planksM.instanceColor.needsUpdate = true;
+  fulsM.instanceMatrix.needsUpdate = fulsM.instanceColor.needsUpdate = true;
+  balls.forEach((b, i) => {
+    dummy.position.set(b.x, b.y + 0.28, b.z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+    ballsM.setMatrixAt(i, dummy.matrix); ballsM.setColorAt(i, ramp(b.id / 6));
+  });
+  ballsM.count = balls.length; ballsM.instanceMatrix.needsUpdate = ballsM.instanceColor.needsUpdate = true;
+  const base = -H - 1.8;
+  slabs.forEach((sl, i) => {
+    const k = Math.max(0.35, 1 - sl.life / 14);
+    const y = base + i * 0.16;
+    dummy.position.set(sl.x, y, sl.z); dummy.rotation.set(0, 0, sl.ang); dummy.scale.set(HALF * 0.82, 0.11, 0.42); dummy.updateMatrix();
+    slabsM.setMatrixAt(i, dummy.matrix);
+    slabC.copy(wood).lerp(ramp(sl.hue), 0.55).multiplyScalar(k);
+    slabsM.setColorAt(i, slabC);
+  });
+  slabsM.count = slabs.length; slabsM.instanceMatrix.needsUpdate = slabsM.instanceColor.needsUpdate = true;
+}
+draw();
+window.__dbg = () => ({ n: N, half: HALF, tip: TIP, balls: balls.length, slabs: slabs.length, tips, ang: planks.map((p) => +p.ang.toFixed(2)) });
+
+let ev = '', evAt = -1e9, next = performance.now() + 8000, paused = false;
+function fire() { loadTop(); ev = 'LOAD'; evAt = performance.now(); next = evAt + 8000 + rand() * 4000; }
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') fire();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `034_lever-stair_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('info');
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    if (now > next) fire();
+    step(dt); draw();
+  }
+  controls.update(); renderer.render(scene, camera);
+  hud.textContent = `034 · LEVER STAIR · ${N} planks · tip ${TIP} · ${pal.name} · seed ${seed}\nTIPS ${tips}${now - evAt < 2200 ? '  ' + ev : ''}`;
+});
+</script>
+</body>
+</html>

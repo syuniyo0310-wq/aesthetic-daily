@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>Phase Flock</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#000}canvas{display:block}
+#hud{position:fixed;left:18px;bottom:14px;font:11px/1.6 ui-monospace,Menlo,monospace;letter-spacing:.12em;color:rgba(255,255,255,.5);pointer-events:none;white-space:pre}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="hud"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let rs = seed >>> 0;
+const rand = () => { rs = (rs + 0x6D2B79F5) | 0; let t = Math.imul(rs ^ (rs >>> 15), 1 | rs); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const TAU = Math.PI * 2;
+const PALS = [
+  { name: 'Spectrum', bg: '#07060b', c: ['#ff3b30', '#ffcc00', '#34c759', '#00c7ff', '#bf5af2'] },
+  { name: 'Sumi & Gold', bg: '#0a0908', c: ['#3a342c', '#8c6b3e', '#e0b15a', '#f4e2b0'] },
+  { name: 'Neon', bg: '#05030a', c: ['#ff2fb3', '#00e5ff', '#7dff3a', '#ffe14d'] },
+];
+const pal = PALS[Math.floor(rand() * PALS.length)];
+const stops = pal.c.map((h) => new THREE.Color(h));
+const col = new THREE.Color();
+const ramp = (t) => { t = ((t % 1) + 1) % 1 * (stops.length - 1); const i = Math.floor(t); return col.copy(stops[i]).lerp(stops[Math.min(stops.length - 1, i + 1)], t - i); };
+
+const MODES = [
+  { name: 'STREAM', J: 0.55, K: 0.35, om: 0.8 },
+  { name: 'FLOCKS', J: 0.2, K: -0.2, om: 0.35 },
+  { name: 'BURST', J: -0.85, K: 0.2, om: 1.1 },
+];
+let mode = 0, J = MODES[0].J, K = MODES[0].K, simT = 0;
+
+const N = 180;
+const x = new Float32Array(N), y = new Float32Array(N), z = new Float32Array(N);
+const th = new Float32Array(N), om = new Float32Array(N);
+const fx = new Float32Array(N), fy = new Float32Array(N), fz = new Float32Array(N), ft = new Float32Array(N);
+const vx = new Float32Array(N), vy = new Float32Array(N), vz = new Float32Array(N);
+for (let i = 0; i < N; i++) {
+  const u = rand() * 2 - 1, a = rand() * TAU, r = Math.sqrt(Math.max(0, 1 - u * u));
+  x[i] = r * Math.cos(a); y[i] = u; z[i] = r * Math.sin(a); th[i] = rand() * TAU;
+}
+
+function step(dt) {
+  const name = MODES[mode].name;
+  fx.fill(0); fy.fill(0); fz.fill(0); ft.fill(0);
+  for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+    let rx = x[j] - x[i], ry = y[j] - y[i], rz = z[j] - z[i];
+    let d = Math.hypot(rx, ry, rz); if (d < 0.38) d = 0.38;
+    const inv = 1 / d; rx *= inv; ry *= inv; rz *= inv;
+    const c = Math.cos(th[j] - th[i]), s = Math.sin(th[j] - th[i]);
+    let mag = J * c - 1.15 / (d * d);
+    mag = Math.max(-2.4, Math.min(2.4, mag));
+    fx[i] += mag * rx; fy[i] += mag * ry; fz[i] += mag * rz;
+    fx[j] -= mag * rx; fy[j] -= mag * ry; fz[j] -= mag * rz;
+    ft[i] += s * inv; ft[j] -= s * inv;
+  }
+  for (let i = 0; i < N; i++) {
+    let ax = fx[i] / N, ay = fy[i] / N, az = fz[i] / N;
+    if (name === 'STREAM') {
+      ax += Math.sin(th[i]) * 1.8 - x[i] * 0.09;
+      ay += Math.cos(th[i] * 2) * 0.85 - y[i] * 0.16 + Math.sin(x[i] * 0.55 + simT) * 0.45;
+      az += Math.cos(th[i]) * 1.8 - z[i] * 0.09;
+    } else if (name === 'FLOCKS') {
+      const k = i % 3, ph = k * TAU / 3;
+      const cx = 4.4 * Math.sin(simT * 0.62 + ph);
+      const cy = 2.6 * Math.sin(simT * 0.41 + k * 1.7);
+      const cz = 4.4 * Math.cos(simT * 0.5 + ph);
+      const dx = x[i] - cx, dz = z[i] - cz;
+      ax += (cx - x[i]) * 0.26 - dz * 0.45;
+      ay += (cy - y[i]) * 0.26 + Math.sin(i * 0.7 + simT) * 0.2;
+      az += (cz - z[i]) * 0.26 + dx * 0.45;
+    } else {
+      const r = Math.hypot(x[i], y[i], z[i]) || 0.01;
+      const out = r < 5.2 ? 2.6 : -2.1;
+      ax += (x[i] / r) * out + Math.sin(th[i] + simT) * 0.7;
+      ay += (y[i] / r) * out * 0.55;
+      az += (z[i] / r) * out + Math.cos(th[i]) * 0.7;
+    }
+    vx[i] = vx[i] * 0.78 + ax * dt * 2.4;
+    vy[i] = vy[i] * 0.78 + ay * dt * 2.4;
+    vz[i] = vz[i] * 0.78 + az * dt * 2.4;
+    const sp = Math.hypot(vx[i], vy[i], vz[i]);
+    if (sp > 0.38) { const s = 0.38 / sp; vx[i] *= s; vy[i] *= s; vz[i] *= s; }
+    x[i] += vx[i]; y[i] += vy[i]; z[i] += vz[i];
+    const r = Math.hypot(x[i], y[i], z[i]);
+    if (r > 8.2) { const s = 8.2 / r; x[i] *= s; y[i] *= s; z[i] *= s; }
+    th[i] += om[i] * dt + K * ft[i] / N;
+  }
+  simT += dt;
+}
+for (let n = 0; n < 24; n++) step(0.05);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.012);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 200);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov(); camera.position.set(0, 4.5, 16);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.6;
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dir = new THREE.DirectionalLight(0xffffff, 0.9); dir.position.set(8, 16, 10); scene.add(dir);
+
+let viewR = 1.5;
+const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.12 }), N);
+mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 3), 3);
+scene.add(mesh);
+const dummy = new THREE.Object3D();
+function draw() {
+  let R = 0.2;
+  for (let i = 0; i < N; i++) R = Math.max(R, Math.hypot(x[i], y[i], z[i]));
+  viewR += (R - viewR) * 0.12;
+  const S = 15 / Math.max(viewR, 2.2), grain = 0.13 * S;
+  for (let i = 0; i < N; i++) {
+    dummy.position.set(x[i] * S, y[i] * S, z[i] * S);
+    dummy.lookAt(dummy.position.x + (vx[i] || 0.02), dummy.position.y + vy[i], dummy.position.z + vz[i]);
+    dummy.scale.set(grain * 0.22, grain * 0.22, grain * 3.1);
+    dummy.updateMatrix(); mesh.setMatrixAt(i, dummy.matrix);
+    ramp((((th[i] % TAU) + TAU) % TAU) / TAU);
+    mesh.instanceColor.setXYZ(i, col.r, col.g, col.b);
+  }
+  mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+}
+draw();
+
+let next = performance.now() + 7000, paused = false, flash = '', flashAt = -1e9;
+function setMode(i) {
+  mode = (i + MODES.length) % MODES.length;
+  const m = MODES[mode]; J = m.J; K = m.K;
+  for (let k = 0; k < N; k++) {
+    om[k] = m.om * (0.6 + rand());
+    if (m.name === 'FLOCKS') th[k] = (k % 3) * (TAU / 3);
+    if (m.name === 'BURST') { vx[k] += (rand() - 0.5) * 0.5; vy[k] += (rand() - 0.5) * 0.5; vz[k] += (rand() - 0.5) * 0.5; }
+  }
+  flash = `CUT → ${m.name}`; flashAt = performance.now(); next = flashAt + 5200 + rand() * 1800;
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') setMode(mode + 1);
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `027_phase-flock_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('hud');
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) { if (now > next) setMode(mode + 1); step(0.05); step(0.05); draw(); }
+  controls.update(); renderer.render(scene, camera);
+  hud.textContent = `027 · PHASE FLOCK · ${MODES[mode].name} · ${pal.name} · seed ${seed}${now - flashAt < 2200 ? '\n' + flash : ''}`;
+});
+</script></body></html>

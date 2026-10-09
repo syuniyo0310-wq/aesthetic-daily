@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Slime Hive</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALS = [
+  { name: 'Neon', bg: '#05040a', a: '#ff3fa4', b: '#36f1ff' },
+  { name: 'Ukiyo', bg: '#0b0907', a: '#e8553e', b: '#2f6fb0' },
+  { name: 'Lichen', bg: '#060806', a: '#d6ff6a', b: '#ffffff' },
+];
+const pal = pick(PALS);
+const G = 48, G2 = G * G, G3 = G2 * G;
+let A = new Float32Array(G3), B = new Float32Array(G3), T = new Float32Array(G3);
+const C = (G - 1) / 2;
+const VESSELS = {
+  COLUMN: (x, y, z) => Math.hypot(x - C, z - C) < 13 && Math.abs(y - C) < 22,
+  TWIN: (x, y, z) => Math.hypot(x - C + 11, y - C, z - C) < 11 || Math.hypot(x - C - 11, y - C + 6, z - C) < 10,
+  SLAB: (x, y, z) => Math.abs((y - C) * 0.85 + (x - C) * 0.5) < 8 && Math.hypot(x - C, z - C) < 22,
+  CROSS: (x, y, z) => { const dx = Math.abs(x - C), dy = Math.abs(y - C), dz = Math.abs(z - C);
+    return (dx < 22 && dy < 8 && dz < 8) || (dy < 22 && dx < 8 && dz < 8) || (dz < 22 && dx < 8 && dy < 8); },
+};
+const VN = Object.keys(VESSELS);
+let vessel = pick(VN);
+const PATTERNS = [
+  { name: 'VEIN', sa: 0.5, so: 4.5, ra: 0.35, ss: 0.9 },
+  { name: 'CELL', sa: 1.05, so: 2.2, ra: 0.6, ss: 0.75 },
+  { name: 'KNOT', sa: 0.3, so: 7.5, ra: 0.18, ss: 1.2 },
+];
+let pat = [pick(PATTERNS), pick(PATTERNS)];
+
+const N = 20000;
+const px = new Float32Array(N), py = new Float32Array(N), pz = new Float32Array(N);
+const dx = new Float32Array(N), dy = new Float32Array(N), dz = new Float32Array(N);
+function spawn(i, cx = C, cy = C, cz = C, r = 20) {
+  for (let k = 0; k < 40; k++) {
+    const x = cx + (rand() - 0.5) * 2 * r, y = cy + (rand() - 0.5) * 2 * r, z = cz + (rand() - 0.5) * 2 * r;
+    if (x > 1 && y > 1 && z > 1 && x < G - 2 && y < G - 2 && z < G - 2 && VESSELS[vessel](x, y, z)) { px[i] = x; py[i] = y; pz[i] = z; break; }
+  }
+  let a = rand() * 2 - 1, b = rand() * Math.PI * 2, r2 = Math.sqrt(1 - a * a);
+  dx[i] = r2 * Math.cos(b); dy[i] = a; dz[i] = r2 * Math.sin(b);
+}
+for (let i = 0; i < N; i++) { px[i] = py[i] = pz[i] = C; spawn(i); }
+const idx = (x, y, z) => ((z | 0) * G2) + ((y | 0) * G) + (x | 0);
+function sample(own, other, x, y, z) {
+  if (x < 0 || y < 0 || z < 0 || x >= G || y >= G || z >= G) return -9;
+  const k = idx(x, y, z);
+  return own[k] - other[k] * 0.8;
+}
+function agents() {
+  for (let i = 0; i < N; i++) {
+    const sp = i & 1, P = pat[sp], own = sp ? B : A, other = sp ? A : B;
+    let fx = dx[i], fy = dy[i], fz = dz[i];
+    let ux = fy, uy = -fx, uz = 0; if (Math.abs(fz) > 0.9) { ux = 1; uy = 0; uz = 0; }
+    let ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+    const vx = fy * uz - fz * uy, vy = fz * ux - fx * uz, vz = fx * uy - fy * ux;
+    const ca = Math.cos(P.sa), sa = Math.sin(P.sa);
+    let best = sample(own, other, px[i] + fx * P.so, py[i] + fy * P.so, pz[i] + fz * P.so), bx = fx, by = fy, bz = fz;
+    for (let k = 0; k < 4; k++) {
+      const ox = k < 2 ? ux : vx, oy = k < 2 ? uy : vy, oz = k < 2 ? uz : vz, sg = k & 1 ? -1 : 1;
+      const sx = fx * ca + ox * sa * sg, sy = fy * ca + oy * sa * sg, sz = fz * ca + oz * sa * sg;
+      const v = sample(own, other, px[i] + sx * P.so, py[i] + sy * P.so, pz[i] + sz * P.so);
+      if (v > best) { best = v; bx = sx; by = sy; bz = sz; }
+    }
+    fx += (bx - fx) * P.ra + (rand() - 0.5) * 0.08; fy += (by - fy) * P.ra + (rand() - 0.5) * 0.08; fz += (bz - fz) * P.ra + (rand() - 0.5) * 0.08;
+    const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+    let nx = px[i] + fx * P.ss, ny = py[i] + fy * P.ss, nz = pz[i] + fz * P.ss;
+    if (nx < 1 || ny < 1 || nz < 1 || nx > G - 2 || ny > G - 2 || nz > G - 2 || !VESSELS[vessel](nx, ny, nz)) {
+      fx = -fx + (rand() - 0.5) * 0.6; fy = -fy + (rand() - 0.5) * 0.6; fz = -fz + (rand() - 0.5) * 0.6;
+      const l = Math.hypot(fx, fy, fz) || 1; fx /= l; fy /= l; fz /= l; nx = px[i]; ny = py[i]; nz = pz[i];
+    }
+    px[i] = nx; py[i] = ny; pz[i] = nz; dx[i] = fx; dy[i] = fy; dz[i] = fz;
+    own[idx(nx, ny, nz)] += 1;
+  }
+}
+function diffuse(F) {
+  for (let z = 1; z < G - 1; z++) for (let y = 1; y < G - 1; y++) {
+    let k = z * G2 + y * G + 1;
+    for (let x = 1; x < G - 1; x++, k++) {
+      T[k] = (F[k] * 0.7 + (F[k - 1] + F[k + 1] + F[k - G] + F[k + G] + F[k - G2] + F[k + G2]) * 0.05) * 0.84;
+    }
+  }
+  const t = T; T = F; return t;
+}
+function tick() { agents(); A = diffuse(A); B = diffuse(B); }
+for (let k = 0; k < 40; k++) tick();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.014);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 300);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov(); camera.position.set(30, 16, 42);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.5;
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(12, 24, 10); scene.add(dir);
+
+const MAX = 12000, U = 0.62;
+const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15 }), MAX);
+mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3);
+mesh.frustumCulled = false; scene.add(mesh);
+const dummy = new THREE.Object3D(), ca = new THREE.Color(pal.a), cb = new THREE.Color(pal.b), tmp = new THREE.Color();
+let thr = 3;
+function draw() {
+  let n = 0;
+  for (let k = 0; k < G3 && n < MAX; k++) {
+    const a = A[k], b = B[k], v = a + b;
+    if (v < thr) continue;
+    const x = k % G, y = ((k / G) | 0) % G, z = (k / G2) | 0;
+    dummy.position.set((x - C) * U, (y - C) * U, (z - C) * U);
+    const sz = Math.min(1, 0.35 + (v - thr) / (thr * 3)) * U * 0.8;
+    dummy.scale.set(sz, sz, sz); dummy.updateMatrix(); mesh.setMatrixAt(n, dummy.matrix);
+    tmp.copy(cb).lerp(ca, a / v); mesh.setColorAt(n, tmp); n++;
+  }
+  thr *= n > 5200 ? 1.06 : n < 3200 ? 0.95 : 1;
+  mesh.count = Math.max(1, n);
+  mesh.instanceMatrix.needsUpdate = true; mesh.instanceColor.needsUpdate = true;
+  return n;
+}
+draw();
+window.__dbg = () => ({ thr: +thr.toFixed(2), vessel, pat: pat.map((p) => p.name) });
+
+let paused = false, ev = '', evAt = -1e9, when = performance.now() + 7000, turn = 0;
+function fire() {
+  turn++;
+  if (turn % 3 === 0) {
+    vessel = VN[(VN.indexOf(vessel) + 1) % VN.length];
+    for (let i = 0; i < N; i++) if (rand() < 0.6) spawn(i);
+    ev = `VESSEL ${vessel}`;
+  } else if (turn % 3 === 1) {
+    const sp = Math.floor(rand() * 2);
+    pat[sp] = PATTERNS[(PATTERNS.indexOf(pat[sp]) + 1) % PATTERNS.length];
+    ev = `MUTATE ${sp ? 'B' : 'A'} → ${pat[sp].name}`;
+  } else {
+    const cx = C + (rand() - 0.5) * 20, cy = C + (rand() - 0.5) * 20, cz = C + (rand() - 0.5) * 20;
+    for (let i = 1; i < N; i += 2) if (rand() < 0.5) spawn(i, cx, cy, cz, 5);
+    ev = 'INVADE';
+  }
+  evAt = performance.now(); when = evAt + 6500 + rand() * 2500;
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') fire();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `033_slime-hive_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('info');
+renderer.setAnimationLoop((now) => {
+  if (!paused) {
+    if (now > when) fire();
+    tick(); draw();
+  }
+  controls.update(); renderer.render(scene, camera);
+  hud.textContent = `033 · SLIME HIVE · ${vessel} · ${pat[0].name}/${pat[1].name} · ${pal.name} · seed ${seed}${now - evAt < 1800 ? '\n' + ev : ''}`;
+});
+</script></body></html>

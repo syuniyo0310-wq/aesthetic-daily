@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Curl Nebula</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const noise = new SimplexNoise({ random: rand });
+
+const PALETTES = [
+  { name: 'Neon',     bg: '#030208', c: ['#ff2fb3', '#00e5ff', '#7dff3a', '#ffe14d'] },
+  { name: 'Spectrum', bg: '#020205', c: ['#ff3b30', '#ffcc00', '#34c759', '#00c7ff', '#5e5ce6', '#ff2d92'] },
+  { name: 'Ember',    bg: '#050201', c: ['#ff5a1f', '#ffb347', '#ffe8c2', '#b3200e'] },
+  { name: 'Ice',      bg: '#010307', c: ['#dfe9ff', '#6ff7d2', '#4d96ff', '#b388ff'] },
+];
+const pal = pick(PALETTES);
+const stops = pal.c.map((h) => new THREE.Color(h));
+
+// 粒子を引き寄せる「器」。器が変わるとシルエットが劇的に変わる
+const SHAPES = {
+  SPHERE(p, out) { const l = p.length() || 1; return out.copy(p).multiplyScalar((22 - l) / l); },
+  TORUS(p, out) {
+    const ring = new THREE.Vector3(p.x, 0, p.z).setLength(24);
+    const d = p.clone().sub(ring), l = d.length() || 1;
+    return out.copy(d).multiplyScalar((7 - l) / l);
+  },
+  TWIN(p, out) {
+    const c = new THREE.Vector3(p.x > 0 ? 16 : -16, 0, 0), d = p.clone().sub(c), l = d.length() || 1;
+    return out.copy(d).multiplyScalar((12 - l) / l);
+  },
+  DISC(p, out) { const r = Math.hypot(p.x, p.z); return out.set(p.x * (28 - r) / (r || 1) * 0.3, -p.y * 1.5, p.z * (28 - r) / (r || 1) * 0.3); },
+};
+let shapeName = pick(Object.keys(SHAPES));
+
+const P = 2600, L = 22;
+const hist = new Float32Array(P * L * 3), life = new Float32Array(P), pc = new Uint8Array(P);
+const segPos = new Float32Array(P * (L - 1) * 2 * 3), segCol = new Float32Array(P * (L - 1) * 2 * 3);
+const tmp = new THREE.Vector3(), att = new THREE.Vector3(), col = new THREE.Color();
+
+function spawn(i) {
+  const u = rand() * 2 - 1, a = rand() * Math.PI * 2, r = 10 + rand() * 20;
+  const x = Math.sqrt(1 - u * u) * Math.cos(a) * r, y = u * r * 0.6, z = Math.sqrt(1 - u * u) * Math.sin(a) * r;
+  for (let j = 0; j < L; j++) { const o = (i * L + j) * 3; hist[o] = x; hist[o + 1] = y; hist[o + 2] = z; }
+  life[i] = 3 + rand() * 9;
+  pc[i] = Math.floor(rand() * stops.length);
+  for (let j = 0; j < L - 1; j++) for (let e = 0; e < 2; e++) {
+    const fade = Math.pow(1 - (j + e) / L, 1.6) * 0.9;
+    col.copy(stops[pc[i]]).multiplyScalar(fade);
+    const o = ((i * (L - 1) + j) * 2 + e) * 3;
+    segCol[o] = col.r; segCol[o + 1] = col.g; segCol[o + 2] = col.b;
+  }
+}
+for (let i = 0; i < P; i++) spawn(i);
+
+let scale = 0.045, flow = 0.9, t = 0;
+const eps = 0.5;
+function potential(x, y, z, out) {
+  return out.set(noise.noise3d(x, y + t, z), noise.noise3d(x + 31.4, y, z - t), noise.noise3d(x - 17.2, y + 9.1 - t, z));
+}
+const a1 = new THREE.Vector3(), a2 = new THREE.Vector3(), b1 = new THREE.Vector3(), b2 = new THREE.Vector3(),
+      c1 = new THREE.Vector3(), c2 = new THREE.Vector3();
+function curl(p, out) {
+  const x = p.x * scale, y = p.y * scale, z = p.z * scale, e = eps * scale;
+  potential(x + e, y, z, a1); potential(x - e, y, z, a2);
+  potential(x, y + e, z, b1); potential(x, y - e, z, b2);
+  potential(x, y, z + e, c1); potential(x, y, z - e, c2);
+  return out.set((b1.z - b2.z) - (c1.y - c2.y), (c1.x - c2.x) - (a1.z - a2.z), (a1.y - a2.y) - (b1.x - b2.x)).multiplyScalar(1 / (2 * e));
+}
+
+// --- three.js ---
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 500);
+// ?????????????????????
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(0, 18, 95);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+window.__view = { get() { const p = camera.position, t = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(t?.x??0).toFixed(3), ty:+(t?.y??0).toFixed(3), tz:+(t?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(segPos, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(segCol, 3));
+const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85 }));
+lines.frustumCulled = false;
+scene.add(lines);
+
+let eventText = '', eventAt = -1e9, lastEvent = performance.now(), paused = false;
+function morph() {
+  shapeName = pick(Object.keys(SHAPES).filter((k) => k !== shapeName));
+  scale = 0.02 + rand() * 0.06; flow = 0.6 + rand() * 0.8;
+  eventText = `MORPH → ${shapeName}`; eventAt = performance.now();
+}
+const info = document.getElementById('info');
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; fitFov();
+  renderer.setSize(innerWidth, innerHeight);
+});
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') morph();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') {
+    const a = document.createElement('a');
+    a.download = `006_curl-nebula_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click();
+  }
+});
+
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    t += dt * 0.08;
+    if (now - lastEvent > 18000 + rand() * 12000) { lastEvent = now; morph(); }
+    for (let i = 0; i < P; i++) {
+      const base = i * L * 3;
+      hist.copyWithin(base + 3, base, base + (L - 1) * 3);
+      tmp.set(hist[base], hist[base + 1], hist[base + 2]);
+      curl(tmp, att).multiplyScalar(flow * 0.9);
+      const pull = SHAPES[shapeName](tmp, new THREE.Vector3()).multiplyScalar(0.16);
+      tmp.addScaledVector(att.add(pull), dt * 22);
+      hist[base] = tmp.x; hist[base + 1] = tmp.y; hist[base + 2] = tmp.z;
+      life[i] -= dt;
+      if (life[i] < 0) spawn(i);
+      for (let j = 0; j < L - 1; j++) {
+        const o = (i * (L - 1) + j) * 6, h = base + j * 3;
+        segPos[o] = hist[h]; segPos[o + 1] = hist[h + 1]; segPos[o + 2] = hist[h + 2];
+        segPos[o + 3] = hist[h + 3]; segPos[o + 4] = hist[h + 4]; segPos[o + 5] = hist[h + 5];
+      }
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  const flash = now - eventAt < 4000 ? `\n${eventText}` : '';
+  info.textContent = `006 · CURL NEBULA · ${shapeName} · ${pal.name} · seed ${seed}${flash}`;
+});
+</script>
+</body>
+</html>

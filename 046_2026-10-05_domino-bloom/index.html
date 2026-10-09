@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Domino Bloom</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALS = [
+  { name: 'Lacquer', bg: '#080404', slab: '#2a1b18', c: ['#f2e6d0', '#d9493a', '#1d1d1d', '#e0b34f'] },
+  { name: 'Pool',    bg: '#03070b', slab: '#14222c', c: ['#e9f7ff', '#4fc3e8', '#ffd166', '#2b59c3'] },
+  { name: 'Candy',   bg: '#07040a', slab: '#22182a', c: ['#ff5fa2', '#ffe14d', '#59e3c2', '#8c6cff'] },
+  { name: 'Bone',    bg: '#060606', slab: '#1c1c1c', c: ['#f4f1ea', '#b9b2a4', '#7c766c', '#e86a3a'] },
+];
+const pal = pick(PALS);
+const stops = pal.c.map((h) => new THREE.Color(h));
+const TURN = pick([{ name: 'square', a: Math.PI / 2 }, { name: 'hex', a: Math.PI / 3 }, { name: 'fan', a: 0.62 }]);
+const LEN = pick([7, 10, 14]);
+const RISE = pick([0, 0.45, 0.9]);
+const MAX = pick([22, 32, 44]);
+const riseName = RISE === 0 ? 'flat' : RISE < 0.6 ? 'stair' : 'climb';
+
+const H = 1, W = 0.62, T = 0.12, D = 0.5;
+const TOUCH = Math.asin((D - T) / H);
+const REST = Math.acos(T / D) - 0.03;
+const rows = [];
+let born = 0, falls = 0, simT = 0, nextCollapse = 9;
+
+function makeRow(x, y, z, a, hue) {
+  return { x, y, z, a, hue, born: born++, th: new Float32Array(LEN), w: new Float32Array(LEN), on: new Uint8Array(LEN), done: false, drop: 0, vy: 0, spin: 0 };
+}
+const fwd = (r) => [Math.cos(r.a), Math.sin(r.a)];
+function slabSeg(r) {
+  const [fx, fz] = fwd(r), L = (LEN - 1) * D + T / 2 + H + 0.25;
+  return [r.x - fx * 0.45, r.z - fz * 0.45, r.x + fx * L, r.z + fz * L];
+}
+function segDist(a, b) {
+  const pt = (px, pz, x1, z1, x2, z2) => {
+    const dx = x2 - x1, dz = z2 - z1, l = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (pz - z1) * dz) / l));
+    return Math.hypot(px - x1 - t * dx, pz - z1 - t * dz);
+  };
+  return Math.min(pt(a[0], a[1], ...b), pt(a[2], a[3], ...b), pt(b[0], b[1], ...a), pt(b[2], b[3], ...a));
+}
+function fits(r, parent) {
+  const seg = slabSeg(r);
+  for (const o of rows) {
+    if (o === parent || o.drop > 0 || (parent && o.parent === parent)) continue;
+    if (Math.abs(o.y - r.y) > 2.6) continue;
+    if (segDist(seg, slabSeg(o)) < 1.15) return false;
+  }
+  return true;
+}
+function sprout(p, force) {
+  const [fx, fz] = fwd(p), L = (LEN - 1) * D + T / 2 + H + 0.25;
+  const ex = p.x + fx * L, ez = p.z + fz * L;
+  const running = rows.reduce((s, r) => s + (r.drop === 0 && !r.done ? 1 : 0), 0);
+  const n = running >= 5 ? (force ? 1 : 0) : force || p.born % 2 === 0 ? 2 : 1;
+  const sign = p.born % 2 ? 1 : -1;
+  const tries = n === 2 ? [TURN.a, -TURN.a, 0] : [sign * TURN.a, -sign * TURN.a, 0];
+  let made = 0;
+  for (const da of tries) {
+    if (made >= n) break;
+    const c = makeRow(ex, p.y + RISE, ez, p.a + da, (p.hue + 0.11 + made * 0.27) % 1);
+    c.from = p.y; c.parent = p;
+    if (fits(c, p)) { c.on[0] = 1; c.w[0] = 2.6; rows.push(c); made++; } else born--;
+  }
+  return made;
+}
+function cull() {
+  const live = rows.filter((r) => r.drop === 0);
+  let extra = live.length - MAX;
+  for (const r of live) { if (extra <= 0) break; if (r.done) { r.drop = 1e-3; falls++; extra--; } }
+}
+function collapse() {
+  const live = rows.filter((r) => r.drop === 0 && r.done);
+  const k = Math.floor(live.length * 0.4);
+  for (let i = 0; i < k; i++) { live[i].drop = 1e-3; live[i].spin = (i % 2 ? 1 : -1) * 0.6; falls++; }
+}
+function revive() {
+  const live = rows.filter((r) => r.drop === 0);
+  const last = live[live.length - 1];
+  if (last) {
+    for (let k = 0; k < 6; k++) {
+      const c = makeRow(last.x, last.y + RISE + 1.4, last.z, last.a + k * TURN.a, (last.hue + 0.3) % 1);
+      if (fits(c, null)) { c.on[0] = 1; c.w[0] = 2.6; rows.push(c); return; }
+      born--;
+    }
+  }
+  const c = makeRow(last ? last.x : 0, (last ? last.y : 0) + 3, last ? last.z : 0, rand() * Math.PI * 2, rand());
+  c.on[0] = 1; c.w[0] = 2.6; rows.push(c);
+}
+function step(dt) {
+  simT += dt;
+  for (const r of rows) {
+    if (r.drop > 0) { r.vy += dt * 14; r.y -= r.vy * dt; r.drop += dt; continue; }
+    if (r.done) continue;
+    for (let j = 0; j < LEN; j++) {
+      if (!r.on[j]) continue;
+      const lim = j === LEN - 1 ? Math.PI / 2 : TOUCH + (REST - TOUCH) * Math.min(1, r.th[j + 1] / REST);
+      r.w[j] += dt * 10 * Math.sin(r.th[j] + 0.18);
+      r.th[j] = Math.min(lim, r.th[j] + r.w[j] * dt);
+      if (r.th[j] >= lim) r.w[j] = Math.min(r.w[j], 0.4);
+      if (j < LEN - 1 && !r.on[j + 1] && r.th[j] >= TOUCH - 0.01) { r.on[j + 1] = 1; r.w[j + 1] = Math.max(1.6, r.w[j] * 0.85); }
+    }
+    if (r.th[LEN - 1] >= Math.PI / 2 - 0.01) { r.done = true; sprout(r, false); cull(); }
+  }
+  for (let i = rows.length - 1; i >= 0; i--) if (rows[i].drop > 3) rows.splice(i, 1);
+  if (!rows.some((r) => r.drop === 0 && !r.done)) revive();
+  if (simT > nextCollapse) { collapse(); nextCollapse = simT + 10 + (born % 4); }
+}
+const root = makeRow(0, 0, 0, 0, 0.05);
+root.on[0] = 1; root.w[0] = 2.6; rows.push(root);
+for (let n = 0; n < 90; n++) step(1 / 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.013);
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 400);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(42) / 2) / Math.pow(camera.aspect, 0.6))) : 42; camera.updateProjectionMatrix(); };
+fitFov();
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.45;
+const R0 = LEN * D * 2.2 + 6;
+camera.position.set(R0 * 0.9, R0 * 0.75, R0 * 1.05);
+controls.target.set(LEN * D * 0.5, 0, 0);
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333333, 1.15));
+const sun = new THREE.DirectionalLight(0xffffff, 1.7); sun.position.set(9, 16, 6); scene.add(sun);
+
+const MAXR = 80;
+const domM = new THREE.InstancedMesh(new THREE.BoxGeometry(T, H, W), new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.1 }), MAXR * LEN);
+const slabM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.05 }), MAXR * 2);
+for (const m of [domM, slabM]) { m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.count * 3), 3); m.frustumCulled = false; scene.add(m); }
+const dummy = new THREE.Object3D(); dummy.rotation.order = 'YZX';
+const col = new THREE.Color(), slabC = new THREE.Color(pal.slab);
+const ramp = (t) => { t = (t % 1) * stops.length; const i = Math.floor(t) % stops.length; return col.copy(stops[i]).lerp(stops[(i + 1) % stops.length], t - Math.floor(t)); };
+const aim = new THREE.Vector3(), off = new THREE.Vector3(), lastAim = new THREE.Vector3(LEN * D * 0.5, 0, 0);
+
+function draw() {
+  let di = 0, si = 0, n = 0, cx = 0, cy = 0, cz = 0;
+  for (const r of rows) {
+    const [fx, fz] = fwd(r), L = (LEN - 1) * D + T / 2 + H + 0.25;
+    const fade = r.drop > 0 ? Math.max(0, 1 - r.drop / 3) : 1;
+    const tip = r.spin * r.drop;
+    if (r.drop === 0) { cx += r.x + fx * L * 0.5; cy += r.y; cz += r.z + fz * L * 0.5; n++; }
+    dummy.position.set(r.x + fx * (L - 0.45) * 0.5, r.y - 0.08, r.z + fz * (L - 0.45) * 0.5);
+    dummy.rotation.set(tip, -r.a, 0); dummy.scale.set(L + 0.45, 0.16, W + 0.5); dummy.updateMatrix();
+    slabM.setMatrixAt(si, dummy.matrix); slabM.setColorAt(si, col.copy(slabC).lerp(ramp(r.hue), 0.18).multiplyScalar(fade)); si++;
+    if (r.from !== undefined && RISE > 0) {
+      const hgt = RISE;
+      dummy.position.set(r.x - fx * 0.05, r.y - hgt * 0.5 - 0.08, r.z - fz * 0.05);
+      dummy.rotation.set(tip, -r.a, 0); dummy.scale.set(0.8, hgt, W + 0.5); dummy.updateMatrix();
+      slabM.setMatrixAt(si, dummy.matrix); slabM.setColorAt(si, ramp(r.hue).multiplyScalar(0.6 * fade)); si++;
+    }
+    for (let j = 0; j < LEN; j++) {
+      const th = r.th[j], px = j * D + T / 2;
+      const u = px - (T / 2) * Math.cos(th) + (H / 2) * Math.sin(th);
+      const v = (T / 2) * Math.sin(th) + (H / 2) * Math.cos(th);
+      dummy.position.set(r.x + fx * u, r.y + v, r.z + fz * u);
+      dummy.rotation.set(tip, -r.a, -th); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+      domM.setMatrixAt(di, dummy.matrix);
+      ramp(r.hue + j * 0.012);
+      if (r.on[j] && th < 0.05) col.lerp(stops[0], 0.3);
+      domM.setColorAt(di, col.multiplyScalar(fade * (r.done ? 0.82 : 1)));
+      di++;
+    }
+    if (di >= domM.instanceMatrix.count - LEN || si >= slabM.instanceMatrix.count - 2) break;
+  }
+  domM.count = di; slabM.count = si;
+  for (const m of [domM, slabM]) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; }
+  if (n) {
+    aim.set(cx / n, cy / n, cz / n);
+    const dx = (aim.x - lastAim.x) * 0.04, dy = (aim.y - lastAim.y) * 0.04, dz = (aim.z - lastAim.z) * 0.04;
+    lastAim.x += dx; lastAim.y += dy; lastAim.z += dz;
+    controls.target.set(lastAim.x, lastAim.y, lastAim.z);
+    camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+    let s2 = 0;
+    for (const r of rows) if (r.drop === 0) s2 += (r.x - aim.x) ** 2 + (r.y - aim.y) ** 2 + (r.z - aim.z) ** 2;
+    const want = Math.max(R0, Math.sqrt(s2 / n) * 2.4 + 9);
+    off.subVectors(camera.position, controls.target);
+    const len = off.length();
+    off.setLength(len + (want - len) * 0.015);
+    camera.position.copy(controls.target).add(off);
+  }
+}
+draw();
+window.__dbg = () => ({ rows: rows.length, live: rows.filter((r) => r.drop === 0).length, waves: rows.filter((r) => r.drop === 0 && !r.done).length, born, falls });
+
+let ev = '', evAt = -1e9, paused = false;
+function push() {
+  const live = rows.filter((r) => r.drop === 0 && r.done);
+  const p = live[live.length - 1 - (born % Math.max(1, Math.min(4, live.length)))];
+  if (p) sprout(p, true); else revive();
+  ev = 'PUSH'; evAt = performance.now();
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') push();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `040_domino-bloom_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('info');
+let last = performance.now(), lastFalls = 0;
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    step(Math.min(dt, 1 / 50));
+    if (falls - lastFalls > 2) { ev = 'COLLAPSE'; evAt = now; }
+    lastFalls = falls;
+    draw();
+  }
+  controls.update(); renderer.render(scene, camera);
+  const waves = rows.filter((r) => r.drop === 0 && !r.done).length;
+  hud.textContent = `046 · DOMINO BLOOM · ${TURN.name} · ${LEN} · ${riseName} · ${pal.name} · seed ${seed}\nWAVES ${waves}${now - evAt < 2200 ? '  ' + ev : ''}`;
+});
+</script>
+</body>
+</html>
