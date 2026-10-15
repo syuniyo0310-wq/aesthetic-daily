@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Curl Shear</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const noise = new SimplexNoise({ random: rand });
+
+const PALETTES = [
+  { name: 'Neon',     bg: '#030208', c: ['#ff2fb3', '#00e5ff', '#7dff3a', '#ffe14d'] },
+  { name: 'Spectrum', bg: '#020205', c: ['#ff3b30', '#ffcc00', '#34c759', '#00c7ff', '#5e5ce6', '#ff2d92'] },
+  { name: 'Ember',    bg: '#050201', c: ['#ff5a1f', '#ffb347', '#ffe8c2', '#b3200e'] },
+  { name: 'Ice',      bg: '#010307', c: ['#dfe9ff', '#6ff7d2', '#4d96ff', '#b388ff'] },
+];
+const pal = pick(PALETTES);
+const stops = pal.c.map((h) => new THREE.Color(h));
+
+// 006 の器に、柱と三つの環を足す。切り替わりでシルエットが別物になる
+const V3 = new THREE.Vector3();
+const SHAPES = {
+  SHELL(p, o) { const l = p.length() || 1; return o.copy(p).multiplyScalar((21 - l) / l); },
+  TORUS(p, o) {
+    const ring = V3.set(p.x, 0, p.z); const rl = ring.length() || 1; ring.multiplyScalar(22 / rl);
+    o.set(p.x - ring.x, p.y, p.z - ring.z); const l = o.length() || 1;
+    return o.multiplyScalar((6.5 - l) / l);
+  },
+  TWIN(p, o) {
+    const cx = p.x > 0 ? 14 : -14; o.set(p.x - cx, p.y, p.z); const l = o.length() || 1;
+    return o.multiplyScalar((10 - l) / l);
+  },
+  SPIRE(p, o) {
+    const r = Math.hypot(p.x, p.z) || 1, ay = Math.abs(p.y);
+    return o.set(p.x / r * (4.2 - r), ay > 26 ? -Math.sign(p.y) * (ay - 26) * 2 : 0, p.z / r * (4.2 - r));
+  },
+  DISC(p, o) {
+    const r = Math.hypot(p.x, p.z) || 1;
+    return o.set(p.x / r * (27 - r) * 0.45, -p.y * 2.4, p.z / r * (27 - r) * 0.45);
+  },
+  CAGE(p, o) {
+    let best = 1e9;
+    const rings = [[p.y, p.z, 0], [p.x, p.z, 1], [p.x, p.y, 2]];
+    for (const [a, b, ax] of rings) {
+      const l = Math.hypot(a, b) || 1, tx = a / l * 18, ty = b / l * 18;
+      const dx = a - tx, dy = b - ty, dz = ax === 0 ? p.x : ax === 1 ? p.y : p.z;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) { best = d2; if (ax === 0) o.set(-p.x, -dx, -dy); else if (ax === 1) o.set(-dx, -p.y, -dy); else o.set(-dx, -dy, -p.z); }
+    }
+    return o;
+  },
+};
+const NAMES = Object.keys(SHAPES);
+let shapeName = pick(NAMES);
+
+const P = 1200, L = 18, SEG = L - 1;
+const hist = new Float32Array(P * L * 3), wide = new Float32Array(P * L), life = new Float32Array(P), pc = new Uint8Array(P);
+const pos = new Float32Array(P * SEG * 18), colA = new Float32Array(P * SEG * 18);
+const tmp = new THREE.Vector3(), att = new THREE.Vector3(), pull = new THREE.Vector3(), col = new THREE.Color();
+const a1 = new THREE.Vector3(), a2 = new THREE.Vector3(), b1 = new THREE.Vector3(), b2 = new THREE.Vector3();
+const c1 = new THREE.Vector3(), c2 = new THREE.Vector3(), oct = new THREE.Vector3();
+
+function paint(i) {
+  for (let j = 0; j < SEG; j++) for (let e = 0; e < 6; e++) {
+    const fade = Math.pow(1 - (j + (e > 2 ? 1 : 0)) / L, 1.7) * 0.42;
+    col.copy(stops[pc[i]]).multiplyScalar(fade);
+    const o = (i * SEG + j) * 18 + e * 3;
+    colA[o] = col.r; colA[o + 1] = col.g; colA[o + 2] = col.b;
+  }
+}
+function onShape(i) {
+  const a = rand() * Math.PI * 2, u = rand() * 2 - 1, su = Math.sqrt(Math.max(0, 1 - u * u));
+  let x, y, z;
+  if (shapeName === 'TORUS') { const R = 22, r = 6.5, b = rand() * Math.PI * 2; x = (R + r * Math.cos(b)) * Math.cos(a); y = r * Math.sin(b); z = (R + r * Math.cos(b)) * Math.sin(a); }
+  else if (shapeName === 'TWIN') { const cx = rand() < 0.5 ? 14 : -14, rr = 10; x = cx + su * Math.cos(a) * rr; y = u * rr; z = su * Math.sin(a) * rr; }
+  else if (shapeName === 'SPIRE') { const rr = 4.2; x = Math.cos(a) * rr; y = (rand() * 2 - 1) * 26; z = Math.sin(a) * rr; }
+  else if (shapeName === 'DISC') { const rr = Math.sqrt(rand()) * 26; x = Math.cos(a) * rr; y = (rand() - 0.5) * 0.4; z = Math.sin(a) * rr; }
+  else if (shapeName === 'CAGE') { const ax = Math.floor(rand() * 3), rr = 18; const p = Math.cos(a) * rr, q = Math.sin(a) * rr; x = ax === 0 ? 0 : p; y = ax === 1 ? 0 : ax === 0 ? p : q; z = ax === 2 ? 0 : q; }
+  else { const rr = 21; x = su * Math.cos(a) * rr; y = u * rr; z = su * Math.sin(a) * rr; }
+  return [x, y, z];
+}
+function spawn(i) {
+  const [x, y, z] = onShape(i), base = i * L * 3;
+  for (let j = 0; j < L; j++) { hist[base + j * 3] = x; hist[base + j * 3 + 1] = y; hist[base + j * 3 + 2] = z; wide[i * L + j] = 0.15; }
+  life[i] = 1.6 + rand() * 2.4; pc[i] = Math.floor(rand() * stops.length); paint(i);
+}
+for (let i = 0; i < P; i++) spawn(i);
+
+let scale = 0.04, flow = 1, octave = 0.35, t = 0, snap = 0;
+function potential(x, y, z, out) {
+  return out.set(noise.noise3d(x, y + t, z), noise.noise3d(x + 31.4, y, z - t), noise.noise3d(x - 17.2, y + 9.1 - t, z));
+}
+function curl(p, sc, out) {
+  const x = p.x * sc, y = p.y * sc, z = p.z * sc, e = 0.5 * sc;
+  potential(x + e, y, z, a1); potential(x - e, y, z, a2);
+  potential(x, y + e, z, b1); potential(x, y - e, z, b2);
+  potential(x, y, z + e, c1); potential(x, y, z - e, c2);
+  return out.set((b1.z - b2.z) - (c1.y - c2.y), (c1.x - c2.x) - (a1.z - a2.z), (a1.y - a2.y) - (b1.x - b2.x)).multiplyScalar(1 / (2 * e));
+}
+function step(dt) {
+  if (snap > 0) snap -= dt;
+  t += dt * (snap > 0 ? 0.45 : 0.1);
+  const k = snap > 0 ? 0.9 : 0.34, spdMul = snap > 0 ? 1.35 : 1;
+  for (let i = 0; i < P; i++) {
+    const base = i * L * 3, w0 = i * L;
+    hist.copyWithin(base + 3, base, base + (L - 1) * 3);
+    wide.copyWithin(w0 + 1, w0, w0 + L - 1);
+    tmp.set(hist[base], hist[base + 1], hist[base + 2]);
+    curl(tmp, scale, att); curl(tmp, scale * 2.8, oct);
+    att.multiplyScalar(flow * 0.85 * spdMul).addScaledVector(oct, octave * 0.4);
+    const spd = att.length();
+    SHAPES[shapeName](tmp, pull);
+    tmp.addScaledVector(att.addScaledVector(pull, k), dt * 22);
+    hist[base] = tmp.x; hist[base + 1] = tmp.y; hist[base + 2] = tmp.z;
+    wide[w0] = 0.035 + 0.22 * (1 - spd / (spd + 1.6));
+    life[i] -= dt;
+    if (life[i] < 0 || tmp.length() > 70) spawn(i);
+  }
+}
+for (let n = 0; n < 80; n++) step(1 / 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(pal.bg);
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 500);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(40) / 2) / Math.pow(camera.aspect, 0.6))) : 40; camera.updateProjectionMatrix(); };
+fitFov();
+camera.position.set(0, 14, 92);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+(g?.x??0).toFixed(3), ty:+(g?.y??0).toFixed(3), tz:+(g?.z??0).toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [x, y, z, tx, ty, tz] = c.split(',').map(Number); if ([x, y, z].every(Number.isFinite)) window.__view.set({ x, y, z, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(colA, 3));
+const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+mesh.frustumCulled = false;
+scene.add(mesh);
+
+const eye = new THREE.Vector3();
+function writeRibbons() {
+  eye.copy(camera.position);
+  for (let i = 0; i < P; i++) {
+    const base = i * L * 3, w0 = i * L;
+    for (let j = 0; j < SEG; j++) {
+      const h = base + j * 3;
+      const x0 = hist[h], y0 = hist[h + 1], z0 = hist[h + 2];
+      const x1 = hist[h + 3], y1 = hist[h + 4], z1 = hist[h + 5];
+      const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+      const mx = (x0 + x1) / 2, my = (y0 + y1) / 2, mz = (z0 + z1) / 2;
+      let sx = dy * (mz - eye.z) - dz * (my - eye.y);
+      let sy = dz * (mx - eye.x) - dx * (mz - eye.z);
+      let sz = dx * (my - eye.y) - dy * (mx - eye.x);
+      const sl = Math.hypot(sx, sy, sz) || 1;
+      const wA = wide[w0 + j] / sl, wB = wide[w0 + j + 1] / sl;
+      const ax = sx * wA, ay = sy * wA, az = sz * wA, bx = sx * wB, by = sy * wB, bz = sz * wB;
+      const o = (i * SEG + j) * 18;
+      const v = [x0 + ax, y0 + ay, z0 + az, x0 - ax, y0 - ay, z0 - az, x1 + bx, y1 + by, z1 + bz,
+                 x0 - ax, y0 - ay, z0 - az, x1 - bx, y1 - by, z1 - bz, x1 + bx, y1 + by, z1 + bz];
+      for (let k = 0; k < 18; k++) pos[o + k] = v[k];
+    }
+  }
+  geo.attributes.position.needsUpdate = true;
+}
+
+let eventText = '', eventAt = -1e9, nextMorph = performance.now() + 3600, paused = false;
+function morph() {
+  shapeName = pick(NAMES.filter((k) => k !== shapeName));
+  scale = 0.018 + rand() * 0.05; flow = 0.8 + rand() * 1.3; octave = rand() < 0.5 ? 0.18 : 0.8; snap = 1.05;
+  for (let i = 0; i < P; i++) { pc[i] = (pc[i] + 1) % stops.length; if (rand() < 0.82) spawn(i); else paint(i); }
+  geo.attributes.color.needsUpdate = true;
+  eventText = `CUT → ${shapeName}`; eventAt = performance.now(); nextMorph = eventAt + 3200 + rand() * 1800;
+}
+const info = document.getElementById('info');
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') morph();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `026_curl-shear_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+
+let last = performance.now();
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    if (now > nextMorph) morph();
+    let acc = Math.min(dt, 0.05), n = 0;
+    while (acc > 0 && n < 3) { step(Math.min(acc, 1 / 60)); acc -= 1 / 60; n++; }
+    writeRibbons(); geo.attributes.color.needsUpdate = true;
+  }
+  controls.update(); renderer.render(scene, camera);
+  const flash = now - eventAt < 2200 ? `\n${eventText}` : '';
+  info.textContent = `026 · CURL SHEAR · ${shapeName} · ${pal.name} · seed ${seed}${flash}`;
+});
+</script>
+</body>
+</html>
