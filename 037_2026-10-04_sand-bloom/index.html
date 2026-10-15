@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Sand Bloom</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #info { position: fixed; left: 18px; bottom: 14px; font: 11px/1.6 ui-monospace, Menlo, monospace;
+          letter-spacing: .12em; color: rgba(255,255,255,.5); pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const q = new URLSearchParams(location.search);
+const seed = q.has('seed') ? +q.get('seed') : Math.floor(Math.random() * 1e9);
+let s = seed >>> 0;
+const rand = () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const PALS = [
+  { name: 'Dune', bg: '#0c0a08', glass: '#cbb89a', c: ['#f3e2c2', '#e0a15a', '#f6f1e8', '#d36a45'] },
+  { name: 'Tide', bg: '#070b10', glass: '#9eb4c6', c: ['#d7f4ff', '#6ec4d6', '#f4fbff', '#e7c56b'] },
+  { name: 'Ember', bg: '#100908', glass: '#c49a8c', c: ['#ffd0b0', '#ff6a45', '#f8efe6', '#f0c14e'] },
+];
+const pal = pick(PALS);
+const GAP = pick([3.4, 4.0, 4.7]);
+const BUD = pick(['axis', 'diag', 'rise']);
+const MAX = pick([18, 26, 34]);
+const stops = pal.c.map((h) => new THREE.Color(h));
+const col = new THREE.Color(), glassC = new THREE.Color(pal.glass);
+const ramp = (t) => { t = Math.min(0.999, Math.max(0, t)) * (stops.length - 1); const i = Math.floor(t); return col.copy(stops[i]).lerp(stops[i + 1], t - i); };
+
+const DIRS = {
+  axis: [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+  diag: [[1, 1, 0], [-1, 1, 0], [1, -1, 0], [0, 1, 1], [0, 1, -1], [1, 0, 1], [-1, 0, 1], [1, 1, 1]],
+  rise: [[0, 1, 0], [1, 1, 0], [-1, 1, 0], [0, 1, 1], [0, 1, -1], [1, 0, 0], [0, 0, 1], [-1, 0, 0]],
+};
+const glasses = [];
+const occ = new Set();
+let bornN = 0, pours = 0, buds = 0, simT = 0, rush = 0;
+const keyOf = (ix, iy, iz) => ix + ',' + iy + ',' + iz;
+
+function spawn(ix, iy, iz, hue, upper) {
+  const key = keyOf(ix, iy, iz);
+  if (occ.has(key)) return null;
+  occ.add(key);
+  const g = { ix, iy, iz, hue, upper, lower: 0, phase: 'fill', born: bornN++ };
+  glasses.push(g);
+  return g;
+}
+function bud(parent) {
+  const dirs = DIRS[BUD];
+  let n = 0;
+  for (let k = 0; k < dirs.length && n < 2; k++) {
+    const d = dirs[(parent.born + k * 3) % dirs.length];
+    const child = spawn(parent.ix + d[0], parent.iy + d[1], parent.iz + d[2], (parent.hue + 0.17) % 1, 0.15);
+    if (child) { n++; buds++; }
+  }
+}
+function cull() {
+  while (glasses.length > MAX) {
+    let oldest = 0;
+    for (let i = 1; i < glasses.length; i++) if (glasses[i].born < glasses[oldest].born) oldest = i;
+    const g = glasses.splice(oldest, 1)[0];
+    occ.delete(keyOf(g.ix, g.iy, g.iz));
+  }
+}
+function step(dt) {
+  simT += dt;
+  if (rush > 0) rush -= dt;
+  const fill = (rush > 0 ? 0.55 : 0.28) * dt;
+  for (const g of glasses) {
+    if (g.phase === 'fill') {
+      g.upper = Math.min(1, g.upper + fill);
+      if (g.upper >= 1) { g.phase = 'pour'; pours++; }
+    } else if (g.phase === 'pour') {
+      const move = Math.min(g.upper, dt * 0.75);
+      g.upper -= move;
+      g.lower = Math.min(1, g.lower + move);
+      if (g.upper <= 0.02) { g.phase = 'rest'; g.upper = 0; bud(g); cull(); }
+    } else if (g.lower > 0.05) {
+      g.lower = Math.max(0, g.lower - dt * 0.08);
+    } else g.phase = 'fill';
+  }
+}
+spawn(0, 0, 0, 0.1, 0.92);
+spawn(1, 0, 0, 0.35, 0.4);
+spawn(0, 1, 0, 0.55, 0.2);
+spawn(-1, 0, 1, 0.72, 0.65);
+spawn(0, 0, -1, 0.15, 0.3);
+spawn(1, 1, 0, 0.5, 0.08);
+for (let n = 0; n < 40; n++) step(1 / 60);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(pal.bg); scene.fog = new THREE.FogExp2(pal.bg, 0.018);
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 400);
+const fitFov = () => { camera.fov = camera.aspect < 1 ? THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(42) / 2) / Math.pow(camera.aspect, 0.6))) : 42; camera.updateProjectionMatrix(); };
+fitFov();
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+camera.position.set(GAP * 3.2, GAP * 2.4, GAP * 4.2);
+controls.target.set(0, 0, 0);
+window.__view = { get() { const p = camera.position, g = controls.target; return { x:+p.x.toFixed(3), y:+p.y.toFixed(3), z:+p.z.toFixed(3), tx:+g.x.toFixed(3), ty:+g.y.toFixed(3), tz:+g.z.toFixed(3) }; }, set(v) { if (!v) return; camera.position.set(v.x, v.y, v.z); controls.target.set(v.tx ?? 0, v.ty ?? 0, v.tz ?? 0); controls.update(); } };
+{ const c = q.get('cam'); if (c) { const [a, b, d, tx, ty, tz] = c.split(',').map(Number); if ([a, b, d].every(Number.isFinite)) window.__view.set({ x: a, y: b, z: d, tx, ty, tz }); } }
+const __tell = () => { try { parent.postMessage({ type: 'aa-view', view: window.__view.get() }, '*'); } catch {} };
+controls.addEventListener('change', __tell); setInterval(__tell, 400); __tell();
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dirL = new THREE.DirectionalLight(0xffffff, 0.8); dirL.position.set(8, 14, 10); scene.add(dirL);
+
+const MAXG = 40, MAXP = 280;
+const upM = new THREE.InstancedMesh(new THREE.ConeGeometry(0.72, 1.15, 6), new THREE.MeshStandardMaterial({ color: pal.glass, roughness: 0.35, metalness: 0.08, wireframe: true }), MAXG);
+const loM = new THREE.InstancedMesh(new THREE.ConeGeometry(0.72, 1.15, 6), new THREE.MeshStandardMaterial({ color: pal.glass, roughness: 0.35, metalness: 0.08, wireframe: true }), MAXG);
+const sandM = new THREE.InstancedMesh(new THREE.ConeGeometry(0.48, 1, 6), new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.04 }), MAXG);
+const roomM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.62, metalness: 0.05 }), MAXG);
+const grainM = new THREE.InstancedMesh(new THREE.SphereGeometry(0.13, 8, 6), new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.08, emissive: 0x33200e, emissiveIntensity: 0.55 }), MAXP);
+for (const m of [sandM, roomM, grainM]) m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(m.count * 3), 3);
+for (const m of [upM, loM, sandM, roomM, grainM]) { m.frustumCulled = false; scene.add(m); }
+const dummy = new THREE.Object3D(), aim = new THREE.Vector3();
+
+function cellPos(g) { return [g.ix * GAP, g.iy * GAP, g.iz * GAP]; }
+function draw() {
+  let grains = 0;
+  let cx = 0, cy = 0, cz = 0;
+  glasses.forEach((g, i) => {
+    const [x, y, z] = cellPos(g);
+    cx += x; cy += y; cz += z;
+    const neck = y + 0.15;
+    const uh = 0.35 + g.upper * 0.75;
+    dummy.position.set(x, neck + uh * 0.5, z); dummy.rotation.set(Math.PI, 0, 0); dummy.scale.set(1, uh / 1.15, 1); dummy.updateMatrix();
+    upM.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(x, neck - 0.58, z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+    loM.setMatrixAt(i, dummy.matrix);
+    dummy.position.set(x, neck + uh * 0.5, z); dummy.rotation.set(Math.PI, 0, 0); dummy.scale.set(0.72, Math.max(0.05, g.upper), 0.72); dummy.updateMatrix();
+    sandM.setMatrixAt(i, dummy.matrix); sandM.setColorAt(i, ramp(g.hue));
+    const rh = 0.12 + g.lower * 1.05;
+    dummy.position.set(x, y - 1.35 + rh * 0.5, z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1.7, rh, 1.7); dummy.updateMatrix();
+    roomM.setMatrixAt(i, dummy.matrix);
+    glassC.copy(ramp(g.hue)).multiplyScalar(0.55);
+    roomM.setColorAt(i, glassC);
+    if (g.phase === 'pour') {
+      for (let k = 0; k < 8 && grains < MAXP; k++) {
+        const t = ((simT * 1.4) + k / 8) % 1;
+        dummy.position.set(x + Math.sin(t * 9 + k) * 0.06, neck - t * 1.35, z + Math.cos(t * 8 + k) * 0.06);
+        dummy.scale.set(1, 1, 1); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+        grainM.setMatrixAt(grains, dummy.matrix); grainM.setColorAt(grains, ramp(g.hue));
+        grains++;
+      }
+    }
+  });
+  upM.count = loM.count = sandM.count = roomM.count = glasses.length;
+  grainM.count = grains;
+  for (const m of [upM, loM, sandM, roomM, grainM]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+  if (glasses.length) aim.set(cx / glasses.length, cy / glasses.length, cz / glasses.length);
+  controls.target.lerp(aim, 0.06);
+}
+draw();
+window.__dbg = () => ({ gap: GAP, bud: BUD, max: MAX, n: glasses.length, pours, buds, pouring: glasses.filter((g) => g.phase === 'pour').length });
+
+let ev = '', evAt = -1e9, paused = false;
+function fire() {
+  rush = 2.6;
+  const g = glasses[glasses.length - 1];
+  if (g) bud(g);
+  ev = 'BLOOM'; evAt = performance.now();
+}
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; fitFov(); renderer.setSize(innerWidth, innerHeight); });
+addEventListener('keydown', (e) => {
+  if (e.key === 'r') location.search = `?seed=${Math.floor(Math.random() * 1e9)}`;
+  if (e.key === 'e') fire();
+  if (e.key === ' ') paused = !paused;
+  if (e.key === 's') { const a = document.createElement('a'); a.download = `037_sand-bloom_${seed}.png`; a.href = renderer.domElement.toDataURL(); a.click(); }
+});
+const hud = document.getElementById('info');
+let last = performance.now(), next = performance.now() + 7000;
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!paused) {
+    if (now > next) { fire(); next = now + 7000 + (bornN % 4) * 600; }
+    step(dt); draw();
+  }
+  controls.update(); renderer.render(scene, camera);
+  const pouring = glasses.filter((g) => g.phase === 'pour').length;
+  hud.textContent = `037 · SAND BLOOM · ${BUD} · ${glasses.length} glasses · ${pal.name} · seed ${seed}\nPOUR ${pouring}${now - evAt < 2200 ? '  ' + ev : ''}`;
+});
+</script>
+</body>
+</html>

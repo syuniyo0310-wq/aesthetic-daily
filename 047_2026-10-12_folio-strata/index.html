@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><title>Folio Strata</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html,body{margin:0;height:100%;background:#050507;overflow:hidden}canvas{display:block}
+#ev{position:fixed;left:16px;bottom:14px;color:#cfc7b8;font:12px/1.4 monospace;letter-spacing:.12em;opacity:0;transition:opacity .6s}</style>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<style>#info, .info, #hud, .hud { display: none !important; }</style>
+<script>addEventListener('dblclick', () => { const u = new URL(location.href); try { const v = window.__view?.get?.(); if (v && [v.x, v.y, v.z].every(Number.isFinite)) u.searchParams.set('cam', [v.x, v.y, v.z, v.tx ?? 0, v.ty ?? 0, v.tz ?? 0].join(',')); } catch {} u.searchParams.set('t', String(Date.now())); location.replace(u.href); });</script>
+</head><body><div id="ev"></div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const qs = new URLSearchParams(location.search);
+let seed = parseInt(qs.get('seed') || '3', 10);
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;}}
+let rnd;
+
+const W = 44, H = 60, CS = 0.12, R0 = 0.55, CAP = 230;
+const RULES = [
+  {n:'CONWAY', b:[3], s:[2,3]}, {n:'HIGHLIFE', b:[3,6], s:[2,3]}, {n:'MOVE', b:[3,6,8], s:[2,4,5]},
+  {n:'CORAL', b:[3], s:[4,5,6,7,8]}, {n:'AMOEBA', b:[3,5,6,7,8], s:[5,6,7,8]}, {n:'2x2', b:[3,6], s:[1,2,5]},
+];
+const PALS = [
+  ['#4a4a5e','#c08a3e','#ffe09a'], ['#3550b8','#e04a2c','#ffd39a'], ['#3f8a5a','#c8d25a','#fff0c0'],
+  ['#7a3a8c','#ff7aa8','#ffe2ea'], null, null, null,
+];
+
+const renderer = new THREE.WebGLRenderer({antialias:true, preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.55;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#050507');
+scene.fog = new THREE.Fog('#050507', 8, 20);
+const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(9.6, 4.6, 9.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -0.3, 0); controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 0.55;
+scene.add(new THREE.HemisphereLight('#c8c4d8', '#120c08', 0.9));
+const key = new THREE.DirectionalLight('#fff2dc', 1.9); key.position.set(6, 10, 4); scene.add(key);
+const rim = new THREE.DirectionalLight('#7f95ff', 0.6); rim.position.set(-7, 3, -6); scene.add(rim);
+function fitFov(){const a = innerWidth/innerHeight; camera.aspect = a; camera.fov = a < 1 ? 2*Math.atan(Math.tan(THREE.MathUtils.degToRad(21))/a)*180/Math.PI : 42; camera.updateProjectionMatrix();}
+fitFov();
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitFov(); });
+
+const rotor = new THREE.Group(); scene.add(rotor);
+const box = new THREE.BoxGeometry(1, 1, 1);
+const pages = [];
+for (let i = 0; i < CAP; i++) {
+  const m = new THREE.InstancedMesh(box, new THREE.MeshStandardMaterial({roughness:0.55, metalness:0.15}), W*H);
+  m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(W*H*3), 3);
+  m.count = 0; m.visible = false; m.frustumCulled = false; rotor.add(m);
+  pages.push({mesh:m, ang:0, y:0});
+}
+
+let grid, hue, nxt, nhue, rule, pal, form, span, rise, base, dir, theta, lift, head, used, gen, nextEv, palName;
+const dummy = new THREE.Object3D(), col = new THREE.Color(), cA = new THREE.Color(), cB = new THREE.Color();
+const id = (i, j) => j*W + i;
+
+function seedBlob(ci, cj, rad, dens, h0, hs){
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const d = Math.hypot(i-ci, j-cj);
+    if (d < rad && rnd() < dens) { grid[id(i,j)] = 1; hue[id(i,j)] = (h0 + hs*Math.atan2(j-cj, i-ci)/6.283 + 1) % 1; }
+  }
+}
+function init(){
+  rnd = mulberry(seed*7919 + 13);
+  grid = new Uint8Array(W*H); hue = new Float32Array(W*H); nxt = new Uint8Array(W*H); nhue = new Float32Array(W*H);
+  rule = RULES[Math.floor(rnd()*4)];
+  const pi = Math.floor(rnd()*PALS.length); pal = PALS[pi]; palName = pal ? ['sumi','ai','koke','yozakura'][pi] : 'neon';
+  const f = rnd(); form = f < 0.4 ? 'rosette' : f < 0.75 ? 'fan' : 'helix';
+  span = form === 'fan' ? Math.PI*(1.15 + rnd()*0.35) : form === 'rosette' ? Math.PI*1.92 : Math.PI*(2.6 + rnd()*0.8);
+  rise = form === 'helix' ? 0.55 + rnd()*0.35 : 0;
+  base = span / (CAP*0.92); dir = 1; theta = 0; lift = 0; head = -1; used = 0; gen = 0;
+  nextEv = 70 + Math.floor(rnd()*60);
+  for (const p of pages) { p.mesh.visible = false; p.mesh.count = 0; }
+  seedBlob(W*0.38, H*0.5, 16, 0.38, rnd(), 1); seedBlob(W*0.7, H*0.25, 8, 0.45, rnd(), 0.3);
+  for (let k = 0; k < 150; k++) step(true);
+}
+
+function step(){
+  let alive = 0, births = 0;
+  const B = rule.b, S = rule.s;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    let n = 0, sx = 0, sy = 0;
+    for (let dj = -1; dj <= 1; dj++) { const jj = j + dj; if (jj < 0 || jj >= H) continue;
+      for (let di = -1; di <= 1; di++) { if (!di && !dj) continue; let ii = i + di; if (ii < 0) ii = -ii - 1; if (ii >= W) continue;
+        const k = id(ii, jj); if (grid[k]) { n++; const a = hue[k]*6.2832; sx += Math.cos(a); sy += Math.sin(a); } } }
+    const k = id(i, j);
+    if (grid[k]) { nxt[k] = S.includes(n) ? 1 : 0; nhue[k] = hue[k]; }
+    else if (B.includes(n)) { nxt[k] = 2; nhue[k] = (Math.atan2(sy, sx)/6.2832 + 1 + (rnd()-0.5)*0.01) % 1; births++; }
+    else nxt[k] = 0;
+    if (nxt[k]) alive++;
+  }
+  [grid, nxt] = [nxt, grid]; [hue, nhue] = [nhue, hue];
+  gen++;
+  const act = births / Math.max(1, alive);
+  const d = base * Math.min(3.2, 0.25 + act*5.5) * dir;
+  theta += d; lift += Math.abs(d) * rise;
+  addPage(births);
+  if (alive < 25) { seedBlob(4 + rnd()*(W-12), 8 + rnd()*(H-16), 9, 0.45, rnd(), 0.4); flash('REBIRTH'); }
+  else if (alive > W*H*0.42) { event(0); }
+  if (gen >= nextEv) { event(); nextEv = gen + 60 + Math.floor(rnd()*120); }
+}
+
+function paint(h, fresh){
+  if (!pal) { col.setHSL(h, 0.85, fresh ? 0.68 : 0.55); return; }
+  const t = h*3, a = Math.floor(t) % 3, f = t - Math.floor(t);
+  cA.set(pal[a]); cB.set(pal[(a+1)%3]); col.copy(cA).lerp(cB, f*f*(3-2*f));
+  if (fresh) col.lerp(cB.set('#ffffff'), 0.18);
+}
+
+function addPage(){
+  head = (head + 1) % CAP; used = Math.min(CAP, used + 1);
+  const p = pages[head], m = p.mesh; p.ang = theta; p.y = lift;
+  const c = Math.cos(theta), s = Math.sin(theta), dt = Math.abs(base) * 1.6;
+  let n = 0;
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const k = id(i, j); if (!grid[k]) continue;
+    const r = R0 + i*CS;
+    dummy.position.set(r*c, (j - H/2)*CS + p.y, r*s);
+    dummy.rotation.set(0, -theta, 0);
+    dummy.scale.set(CS*0.92, CS*0.92, Math.max(CS*0.22, Math.min(CS*0.95, r*dt)));
+    dummy.updateMatrix(); m.setMatrixAt(n, dummy.matrix);
+    paint(hue[k], grid[k] === 2); m.instanceColor.setXYZ(n, col.r, col.g, col.b); n++;
+  }
+  m.count = n; m.visible = true; m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true;
+  for (let q = 1; q < used; q++) {
+    const o = pages[(head - q + CAP) % CAP];
+    if (Math.abs(theta - o.ang) > span) { for (let z = q; z < used; z++) pages[(head - z + CAP) % CAP].mesh.visible = false; used = q; break; }
+  }
+  for (let q = 0; q < used; q++) {
+    const o = pages[(head - q + CAP) % CAP], age = Math.abs(theta - o.ang) / span;
+    const v = Math.pow(Math.max(0, 1 - age), 1.1) * 0.8 + 0.2;
+    o.mesh.material.color.setScalar(q === 0 ? 1.25 : v);
+  }
+}
+
+function event(force){
+  const e = force ?? Math.floor(rnd()*4);
+  if (e === 0) { let r; do { r = RULES[Math.floor(rnd()*RULES.length)]; } while (r === rule); rule = r; flash('MUTATE ' + r.n); }
+  else if (e === 1) { seedBlob(4 + rnd()*(W-14), 6 + rnd()*(H-12), 8 + rnd()*5, 0.5, rnd(), 0.15); flash('INVASION'); }
+  else if (e === 2) { for (let j = 0; j < H/2; j++) for (let i = 0; i < W; i++) { const a = id(i, j), b = id(i, H-1-j); grid[b] = grid[a]; hue[b] = (hue[a] + 0.5) % 1; } flash('MIRROR'); }
+  else { dir *= -1; flash('FOLD BACK'); }
+}
+const evEl = document.getElementById('ev'); let evT;
+function flash(t){ evEl.textContent = t; evEl.style.opacity = 0.75; clearTimeout(evT); evT = setTimeout(() => evEl.style.opacity = 0, 1600); }
+
+let paused = false, frame = 0;
+addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') { seed = Math.floor(Math.random()*1e6); history.replaceState(null, '', '?seed=' + seed); init(); }
+  else if (e.key === 's' || e.key === 'S') { renderer.render(scene, camera); const a = document.createElement('a'); a.download = `folio-strata-${seed}.png`; a.href = renderer.domElement.toDataURL('image/png'); a.click(); }
+  else if (e.key === 'e' || e.key === 'E') event();
+  else if (e.key === ' ') { paused = !paused; e.preventDefault(); }
+});
+init();
+window.FEATURES = () => ({form, rule: rule.n, palette: palName});
+renderer.setAnimationLoop(() => {
+  if (!paused && (frame++ % 3 === 0)) step();
+  rotor.position.y += (-lift - rotor.position.y) * 0.08;
+  controls.update(); renderer.render(scene, camera);
+});
+</script></body></html>
